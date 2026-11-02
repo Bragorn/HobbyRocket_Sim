@@ -1,0 +1,96 @@
+"use strict";
+
+/* =====================================================================
+   DATA AND SETTINGS  (js/data.js)
+   Every number you will want to tune lives in this file.
+   Units are SI everywhere: meters, kilograms, seconds, newtons.
+   ===================================================================== */
+
+/* ---- physics ---- */
+const DT = 1 / 240;          // physics step, seconds
+const MAX_STEPS = 10;        // most physics steps per drawn frame (stops the "spiral of death")
+const G = 9.81;              // gravity, m/s^2
+const RHO0 = 1.225;          // air density at sea level, kg/m^3
+const SCALE_HEIGHT = 8500;   // air thins by a factor of e every 8500 m
+const DRAG_TUNE = 1.0;       // multiplies airframe drag. Try 1.5 or 2 for a snappier slowdown.
+
+/* ---- landing verdicts (impact speed in m/s) ---- */
+const SAFE_LANDING_SPEED = 8;    // at or below this: SAFE
+const CRASH_SPEED = 15;          // above this: CRASH. In between: HARD
+
+/* ---- parachute ---- */
+const CHUTE_OPEN_TIME = 0.4;     // seconds from deployment to fully open
+
+/* ---- telemetry ---- */
+const TELE_RATE = 60;            // samples per second of flight
+const TELE_CAP = TELE_RATE * 300;// room for 5 minutes of flight
+
+
+/* ---------------------------------------------------------------------
+   MOTORS (our own numbers, tune freely)
+   curve = list of [seconds after ignition, thrust in newtons].
+   Same shape as real thrust-curve files, so real data could be dropped
+   in later. Fuel mass burns off in proportion to the impulse delivered.
+   --------------------------------------------------------------------- */
+const MOTORS = [
+  { name: "A", dryMass: 0.0127, propMass: 0.0033,
+    curve: [[0, 0], [0.02, 10], [0.08, 9], [0.20, 6], [0.32, 5], [0.40, 0]] },
+  { name: "C", dryMass: 0.0120, propMass: 0.0120,
+    curve: [[0, 0], [0.05, 13], [0.15, 12], [0.40, 7], [1.00, 5.5], [1.50, 5], [1.65, 0]] },
+  { name: "E", dryMass: 0.0320, propMass: 0.0250,
+    curve: [[0, 0], [0.10, 22], [0.30, 16], [0.60, 11], [2.50, 8], [3.00, 6], [3.20, 0]] }
+];
+
+for (let i = 0; i < MOTORS.length; i++) {         // work out burn time and total impulse once
+  const m = MOTORS[i];
+  let imp = 0;
+  for (let k = 1; k < m.curve.length; k++) {
+    imp += (m.curve[k][1] + m.curve[k - 1][1]) / 2 * (m.curve[k][0] - m.curve[k - 1][0]);
+  }
+  m.totalImpulse = imp;                           // N*s
+  m.burnTime = m.curve[m.curve.length - 1][0];    // s
+}
+
+
+/* ---------------------------------------------------------------------
+   DELAY CHARGES
+   A simple model rocket has no sensor. A delay charge fires this many
+   seconds AFTER the motor burns out and pushes the parachute out.
+   --------------------------------------------------------------------- */
+const DELAYS = [3, 5, 7];
+
+
+/* ---------------------------------------------------------------------
+   PARACHUTES (first guesses, to be tested and then locked in)
+   diameter in m, cd = drag coefficient of the canopy, mass in kg.
+   The drag area (cdA) is worked out from the diameter.
+   --------------------------------------------------------------------- */
+const CHUTES = [
+  { name: "S", diameter: 0.20, cd: 0.75, mass: 0.004, color: "#f5c542" },
+  { name: "M", diameter: 0.30, cd: 0.75, mass: 0.006, color: "#f5c542" },
+  { name: "L", diameter: 0.45, cd: 0.75, mass: 0.010, color: "#f5c542" }
+];
+for (let i = 0; i < CHUTES.length; i++) {
+  const r = CHUTES[i].diameter / 2;
+  CHUTES[i].cdA = CHUTES[i].cd * Math.PI * r * r; // m^2
+}
+
+
+/* ---------------------------------------------------------------------
+   ROCKET
+   A rocket is a LIST OF PARTS, bottom to top. Later, the joints between
+   neighbouring parts are what will break.
+   mass = kg. cdA = drag area in m^2 (drag coefficient x area).
+   inside:true parts sit inside the stack and add no height.
+   The motor and parachute masses depend on what you picked, so their
+   mass here is 0 and sim.js fills it in.
+   --------------------------------------------------------------------- */
+const rocket = {
+  parts: [
+    { name: "Fins",      kind: "fins",  length: 0.06, width: 0.025, span: 0.060, mass: 0.008, cdA: 0.8e-4, color: "#c0392b" },
+    { name: "Body tube", kind: "tube",  length: 0.30, width: 0.025,              mass: 0.030, cdA: 0.8e-4, color: "#ecf0f1" },
+    { name: "Nose cone", kind: "nose",  length: 0.08, width: 0.025,              mass: 0.010, cdA: 1.0e-4, color: "#e67e22" },
+    { name: "Motor",     kind: "motor", length: 0.07, width: 0.018,              mass: 0,     cdA: 0,      color: "#34495e", inside: true },
+    { name: "Parachute", kind: "chute", length: 0,    width: 0,                  mass: 0,     cdA: 0,      color: "#f5c542", inside: true }
+  ]
+};
