@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hobby Rocket Sim - steps 1 to 5</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #101418; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+/* =====================================================================
+   HOBBY ROCKET SIM - steps 1 to 5
+   Step 1: game loop (fixed timestep) + performance readout
+   Step 2: world in real units + a rocket made of parts + camera
+   Step 3: motors with thrust curves, fuel that burns off (mass drops)
+   Step 4: air drag that thins with altitude
+   Step 5: telemetry recorder, live graphs, flight log, CSV export
+
+   RULES OF THE CODE
+   - The sim uses SI units only: meters, kilograms, seconds, newtons.
+     That is real size 1:1. There is no scale factor anywhere.
+   - Pixels exist ONLY in the camera/render section.
+   - World: x = sideways (m), y = up (m), the ground is y = 0.
+   - Keep this a plain script (no modules) so it opens by double-click.
+   ===================================================================== */
+
+
+/* ---------------------------------------------------------------------
+   CONFIG
+   --------------------------------------------------------------------- */
+const DT = 1 / 240;        // physics step in seconds
+const MAX_STEPS = 10;      // most physics steps allowed per drawn frame
+const G = 9.81;            // gravity in m/s^2 (constant for now)
+const RHO0 = 1.225;        // air density at sea level, kg/m^3
+const SCALE_HEIGHT = 8500; // air thins by a factor of e every 8500 m
+const DRAG_TUNE = 1.0;     // multiplies all drag. Try 1.5 or 2 for a snappier slowdown.
+
+
+/* ---------------------------------------------------------------------
+   MOTORS (our own numbers, tune freely)
+   curve = list of [seconds after ignition, thrust in newtons].
+   Same shape as real thrust-curve files, so real data could be dropped
+   in later. Fuel mass burns off in proportion to the impulse delivered.
+   --------------------------------------------------------------------- */
+const MOTORS = [
+  { name: "A", dryMass: 0.0127, propMass: 0.0033,
+    curve: [[0, 0], [0.02, 10], [0.08, 9], [0.20, 6], [0.32, 5], [0.40, 0]] },
+  { name: "C", dryMass: 0.0120, propMass: 0.0120,
+    curve: [[0, 0], [0.05, 13], [0.15, 12], [0.40, 7], [1.00, 5.5], [1.50, 5], [1.65, 0]] },
+  { name: "E", dryMass: 0.0320, propMass: 0.0250,
+    curve: [[0, 0], [0.10, 22], [0.30, 16], [0.60, 11], [2.50, 8], [3.00, 6], [3.20, 0]] }
+];
+
+function prepareMotor(m) {                       // work out burn time and total impulse once
+  let imp = 0;
+  for (let i = 1; i < m.curve.length; i++) {
+    imp += (m.curve[i][1] + m.curve[i - 1][1]) / 2 * (m.curve[i][0] - m.curve[i - 1][0]);
+  }
+  m.totalImpulse = imp;                           // N*s
+  m.burnTime = m.curve[m.curve.length - 1][0];    // s
+}
+for (let i = 0; i < MOTORS.length; i++) prepareMotor(MOTORS[i]);
+
+function curveValue(c, t) {                       // linear interpolation along the thrust curve
+  if (t <= c[0][0]) return c[0][1];
+  for (let i = 1; i < c.length; i++) {
+    if (t <= c[i][0]) {
+      const a = c[i - 1], b = c[i];
+      return a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]);
+    }
+  }
+  return 0;
+}
+
+let motorIndex = 1;                               // start with the C motor
+
+
+/* ---------------------------------------------------------------------
+   ROCKET DATA
+   A rocket is a LIST OF PARTS, bottom to top. Later, the joints between
+   neighbouring parts are what will break.
+   mass = kg. cdA = drag area in m^2 (drag coefficient x area).
+   inside:true parts sit inside the stack and add no height.
+   The motor's mass is not fixed: it depends on the motor and its fuel.
+   --------------------------------------------------------------------- */
+const rocket = {
+  parts: [
+    { name: "Fins",      kind: "fins",  length: 0.06, width: 0.025, span: 0.060, mass: 0.008, cdA: 0.8e-4, color: "#c0392b" },
+    { name: "Body tube", kind: "tube",  length: 0.30, width: 0.025,              mass: 0.030, cdA: 0.8e-4, color: "#ecf0f1" },
+    { name: "Nose cone", kind: "nose",  length: 0.08, width: 0.025,              mass: 0.010, cdA: 1.0e-4, color: "#e67e22" },
+    { name: "Motor",     kind: "motor", length: 0.07, width: 0.018,              mass: 0,     cdA: 0,      color: "#34495e", inside: true }
+  ]
+};
+
+function motorMass() {                            // dry case + the fuel that is left
+  const m = MOTORS[motorIndex];
+  if (sim.burnedOut) return m.dryMass;
+  const used = Math.min(1, sim.impulse / m.totalImpulse);
+  return m.dryMass + m.propMass * (1 - used);
+}
+
+function rocketMass() {
+  let total = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i];
+    total += (p.kind === "motor") ? motorMass() : p.mass;
+  }
+  return total;
+}
+
+function rocketCdA() {
+  let total = 0;
+  for (let i = 0; i < rocket.parts.length; i++) total += rocket.parts[i].cdA;
+  return total * DRAG_TUNE;
+}
+
+function rocketHeight() {
+  let h = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    if (!rocket.parts[i].inside) h += rocket.parts[i].length;
+  }
+  return h;
+}
+
+const ROCKET_H = rocketHeight();
+
+
+/* ---------------------------------------------------------------------
+   TELEMETRY
+   The recorder saves a sample 60 times a second during the flight into
+   fixed arrays (no garbage created while flying). Graphs, the flight log
+   and the CSV export all read from here.
+   --------------------------------------------------------------------- */
+const TELE_RATE = 60;                  // samples per second of flight
+const TELE_CAP = TELE_RATE * 300;      // room for 5 minutes of flight
+const CHANNELS = [                     // index = position in tele.data
+  { key: "t",      label: "Time",             csv: "t_s" },
+  { key: "alt",    label: "Altitude",         csv: "altitude_m" },
+  { key: "vy",     label: "Speed",            csv: "speed_ms" },
+  { key: "ay",     label: "Acceleration",     csv: "accel_ms2" },
+  { key: "thrust", label: "Thrust",           csv: "thrust_N" },
+  { key: "drag",   label: "Drag",             csv: "drag_N" },
+  { key: "mass",   label: "Mass",             csv: "mass_kg" },
+  { key: "q",      label: "Dynamic pressure", csv: "dynpressure_Pa" }
+];
+
+const tele = { n: 0, nextT: 0, done: false, data: [], lo: [], hi: [], events: [] };
+for (let c = 0; c < CHANNELS.length; c++) {
+  tele.data.push(new Float32Array(TELE_CAP));
+  tele.lo.push(Infinity);
+  tele.hi.push(-Infinity);
+}
+
+function teleReset() {
+  tele.n = 0; tele.nextT = 0; tele.done = false; tele.events.length = 0;
+  for (let c = 0; c < CHANNELS.length; c++) { tele.lo[c] = Infinity; tele.hi[c] = -Infinity; }
+}
+
+function teleEvent(label) {                       // a marked moment in the flight
+  tele.events.push({ t: sim.t, label: label });
+}
+
+function teleSet(c, i, v) {
+  tele.data[c][i] = v;
+  if (v < tele.lo[c]) tele.lo[c] = v;
+  if (v > tele.hi[c]) tele.hi[c] = v;
+}
+
+function teleRecord(force) {
+  if (tele.n >= TELE_CAP) return;
+  if (!force && sim.t < tele.nextT) return;
+  tele.nextT += 1 / TELE_RATE;
+  const i = tele.n++;
+  teleSet(0, i, sim.t);
+  teleSet(1, i, sim.y);
+  teleSet(2, i, sim.vy);
+  teleSet(3, i, sim.ay);
+  teleSet(4, i, sim.thrust);
+  teleSet(5, i, sim.drag);
+  teleSet(6, i, sim.mass);
+  teleSet(7, i, sim.q);
+}
+
+function buildCsv() {
+  const head = [];
+  for (let c = 0; c < CHANNELS.length; c++) head.push(CHANNELS[c].csv);
+  const lines = [head.join(",")];
+  for (let i = 0; i < tele.n; i++) {
+    const row = [];
+    for (let c = 0; c < CHANNELS.length; c++) row.push(tele.data[c][i].toFixed(4));
+    lines.push(row.join(","));
+  }
+  return lines.join("\n");
+}
+
+function exportCsv() {
+  if (tele.n === 0) return;
+  const blob = new Blob([buildCsv()], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "flight-motor-" + MOTORS[motorIndex].name + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+}
+
+
+/* ---------------------------------------------------------------------
+   SIM STATE (vertical flight only for now)
+   --------------------------------------------------------------------- */
+const sim = {
+  t: 0,                          // flight time: seconds since ignition
+  y: 0, vy: 0, ay: 0,            // altitude, speed, acceleration
+  thrust: 0, drag: 0, mass: 0,   // newtons, newtons, kg
+  q: 0,                          // dynamic pressure, Pa (air pushing on the rocket)
+  ignited: false, burnedOut: false,
+  motorT: 0,                     // seconds since ignition
+  impulse: 0,                    // N*s delivered so far
+  prevVy: 0, apogeeLogged: false,
+  apogee: 0, maxSpeed: 0, maxAccel: 0, maxQ: 0, impact: 0
+};
+
+function airDensity(y) {
+  return RHO0 * Math.exp(-Math.max(0, y) / SCALE_HEIGHT);
+}
+
+function flightState() {
+  if (!sim.ignited) return "READY";
+  if (sim.burnedOut && sim.y <= 0) return "LANDED";
+  if (!sim.burnedOut) return "BURN";
+  return sim.vy > 0 ? "COAST" : "FALL";
+}
+
+function step(dt) {
+  // 0) the flight clock runs from ignition until touchdown
+  const active = sim.ignited && !(sim.burnedOut && sim.y <= 0);
+  if (active) sim.t += dt;
+
+  // 1) motor
+  let thrust = 0;
+  if (sim.ignited && !sim.burnedOut) {
+    const motor = MOTORS[motorIndex];
+    thrust = curveValue(motor.curve, sim.motorT);
+    sim.impulse += thrust * dt;
+    sim.motorT += dt;
+    if (sim.motorT >= motor.burnTime) {
+      sim.burnedOut = true;
+      thrust = 0;
+      teleEvent("Burnout  " + sim.y.toFixed(0) + " m, " + sim.vy.toFixed(0) + " m/s");
+    }
+  }
+  sim.thrust = thrust;
+
+  // 2) forces (newtons, up is positive)
+  const m = rocketMass();
+  sim.mass = m;
+  const rho = airDensity(sim.y);
+  const dragMag = 0.5 * rho * sim.vy * sim.vy * rocketCdA();
+  const dragForce = sim.vy > 0 ? -dragMag : (sim.vy < 0 ? dragMag : 0);   // always opposes motion
+  sim.drag = dragMag;
+  const net = thrust - m * G + dragForce;
+
+  // 3) move
+  if (sim.y <= 0 && net <= 0) {
+    sim.y = 0; sim.vy = 0; sim.ay = 0;            // sitting on the pad
+  } else {
+    sim.ay = net / m;
+    sim.vy += sim.ay * dt;                        // velocity first...
+    sim.y  += sim.vy * dt;                        // ...then position (semi-implicit Euler)
+    if (sim.y < 0) {                              // touchdown (crash rules come later)
+      sim.impact = -sim.vy;
+      sim.y = 0; sim.vy = 0;
+      sim.burnedOut = true;
+      teleEvent("Touchdown  " + sim.impact.toFixed(0) + " m/s");
+    }
+  }
+
+  // 4) flight stats and events
+  sim.q = 0.5 * airDensity(sim.y) * sim.vy * sim.vy;
+  if (sim.y > sim.apogee) sim.apogee = sim.y;
+  if (Math.abs(sim.vy) > sim.maxSpeed) sim.maxSpeed = Math.abs(sim.vy);
+  if (sim.ay > sim.maxAccel) sim.maxAccel = sim.ay;
+  if (sim.q > sim.maxQ) sim.maxQ = sim.q;
+  if (!sim.apogeeLogged && sim.prevVy > 0 && sim.vy <= 0 && sim.y > 0) {
+    sim.apogeeLogged = true;
+    teleEvent("Apogee  " + sim.y.toFixed(0) + " m");
+  }
+  sim.prevVy = sim.vy;
+
+  // 5) telemetry (the last sample is forced at touchdown)
+  if (sim.ignited && !tele.done) {
+    const landed = sim.burnedOut && sim.y <= 0;
+    teleRecord(landed);
+    if (landed) tele.done = true;
+  }
+}
+
+function launch() {
+  if (sim.ignited) return;
+  sim.ignited = true;
+  teleEvent("Ignition");
+}
+
+function resetSim() {
+  sim.t = 0; sim.y = 0; sim.vy = 0; sim.ay = 0;
+  sim.thrust = 0; sim.drag = 0; sim.q = 0;
+  sim.ignited = false; sim.burnedOut = false;
+  sim.motorT = 0; sim.impulse = 0;
+  sim.prevVy = 0; sim.apogeeLogged = false;
+  sim.apogee = 0; sim.maxSpeed = 0; sim.maxAccel = 0; sim.maxQ = 0; sim.impact = 0;
+  sim.mass = rocketMass();
+  teleReset();
+  cam.y = 0; cam.zoom = START_ZOOM;
+}
+
+
+/* ---------------------------------------------------------------------
+   CAMERA (the only place where meters turn into pixels)
+   --------------------------------------------------------------------- */
+const START_ZOOM = 200;    // pixels per meter at the pad
+const HORIZON = 0.62;      // fraction of the screen height where the camera target sits
+const cam = { y: 0, zoom: START_ZOOM };
+
+function updateCamera(dtFrame) {
+  const targetZoom = START_ZOOM / (1 + sim.y / 8);               // zoom out as we climb
+  cam.y += (sim.y - cam.y) * Math.min(1, 10 * dtFrame);          // follow the rocket
+  cam.zoom *= Math.pow(targetZoom / cam.zoom, Math.min(1, 4 * dtFrame));
+}
+
+
+/* ---------------------------------------------------------------------
+   CANVAS + RESOLUTION
+   We draw in CSS pixels (Wc x Hc). By default the canvas has exactly that
+   many real pixels ("fast"). Press H for "sharp" (full retina resolution).
+   --------------------------------------------------------------------- */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d", { alpha: false });
+let Wc = 0, Hc = 0;
+let sharp = false;
+let showDebug = true;
+let graphPage = 0;         // 0 and 1 = graph pages, -1 = graphs off
+
+function resize() {
+  Wc = window.innerWidth;
+  Hc = window.innerHeight;
+  const k = sharp ? (window.devicePixelRatio || 1) : 1;
+  canvas.width = Math.floor(Wc * k);
+  canvas.height = Math.floor(Hc * k);
+  canvas.style.width = Wc + "px";
+  canvas.style.height = Hc + "px";
+  ctx.setTransform(k, 0, 0, k, 0, 0);
+}
+
+function sx(x) { return Wc / 2 + x * cam.zoom; }
+function sy(y) { return Hc * HORIZON - (y - cam.y) * cam.zoom; }
+
+
+/* ---------------------------------------------------------------------
+   DRAWING: the world
+   --------------------------------------------------------------------- */
+function drawSky() {
+  const t = Math.min(1, Math.max(0, cam.y / 3000));      // sky darkens with altitude
+  const r = Math.round(135 - 125 * t);
+  const g = Math.round(190 - 175 * t);
+  const b = Math.round(235 - 195 * t);
+  ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
+  ctx.fillRect(0, 0, Wc, Hc);
+}
+
+function niceStep(x) {                                    // round to 1, 2, 5, 10 x 10^n
+  const mag = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
+  const r = x / mag;
+  return (r < 1.5 ? 1 : r < 3.5 ? 2 : r < 7.5 ? 5 : 10) * mag;
+}
+
+function drawAltitudeLines() {
+  const stepM = niceStep(90 / cam.zoom);                  // roughly one line per 90 pixels
+  const yTop = cam.y + (Hc * HORIZON) / cam.zoom;
+  const yBottom = cam.y - (Hc * (1 - HORIZON)) / cam.zoom;
+  const first = Math.max(1, Math.ceil(yBottom / stepM));  // never draw on the ground itself
+
+  ctx.strokeStyle = "rgba(255,255,255,0.28)";
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.lineWidth = 1;
+  ctx.font = "11px monospace";
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "left";
+  ctx.beginPath();
+  for (let k = first; k * stepM <= yTop && k - first < 40; k++) {
+    const py = Math.round(sy(k * stepM)) + 0.5;
+    ctx.moveTo(0, py);
+    ctx.lineTo(Wc, py);
+    ctx.fillText(+(k * stepM).toFixed(2) + " m", 8, py - 2);
+  }
+  ctx.stroke();
+}
+
+function drawGround() {
+  const gy = sy(0);
+  if (gy > Hc) return;
+  const top = Math.max(0, gy);
+  ctx.fillStyle = "#3d5a2e";
+  ctx.fillRect(0, top, Wc, Hc - top);
+  ctx.fillStyle = "#2c4321";
+  ctx.fillRect(0, gy, Wc, 3);
+}
+
+function drawPad() {
+  const gy = sy(0);
+  const z = cam.zoom;
+  if (gy < 0 || gy - z > Hc) return;                      // pad and rod are off screen
+  ctx.fillStyle = "#555e66";
+  ctx.fillRect(sx(-0.15), gy - 0.03 * z, 0.30 * z, 0.03 * z);            // pad plate
+  ctx.fillStyle = "#8a949c";
+  ctx.fillRect(sx(0.03), gy - 1.0 * z, Math.max(1, 0.006 * z), 1.0 * z); // launch rod, 1 m tall
+}
+
+function drawFlame(cx, baseY, z) {
+  const f = Math.min(2, Math.sqrt(sim.thrust / 6));       // bigger thrust, bigger flame
+  const len = Math.max(6, 0.14 * z * f) * (0.8 + Math.random() * 0.4);
+  const w = Math.max(2, 0.014 * z * f);
+  ctx.fillStyle = "#f1c40f";
+  ctx.beginPath();
+  ctx.moveTo(cx - w, baseY);
+  ctx.lineTo(cx, baseY + len);
+  ctx.lineTo(cx + w, baseY);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawMarker(cx, baseY) {                          // used when the rocket is too small to see
+  ctx.fillStyle = "#e67e22";
+  ctx.beginPath();
+  ctx.moveTo(cx, baseY - 14);
+  ctx.lineTo(cx - 4, baseY);
+  ctx.lineTo(cx + 4, baseY);
+  ctx.closePath();
+  ctx.fill();
+  if (sim.thrust > 0) drawFlame(cx, baseY, cam.zoom);
+}
+
+function drawRocket() {
+  const z = cam.zoom;
+  const cx = sx(0);
+  const baseY = sy(sim.y);
+
+  if (ROCKET_H * z < 14) { drawMarker(cx, baseY); return; }
+  if (sim.thrust > 0) drawFlame(cx, baseY, z);
+
+  let up = 0;                                             // meters up the stack
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i];
+    const w = p.width * z;
+
+    if (p.inside) {                                       // motor: only the nozzle shows
+      ctx.fillStyle = p.color;
+      ctx.fillRect(cx - w * 0.4, baseY, w * 0.8, Math.max(2, 0.01 * z));
+      continue;
+    }
+
+    const h = p.length * z;
+    const bottom = baseY - up * z;
+    const top = bottom - h;
+    ctx.fillStyle = p.color;
+
+    if (p.kind === "tube") {
+      ctx.fillRect(cx - w / 2, top, w, h);
+    } else if (p.kind === "nose") {
+      ctx.beginPath();
+      ctx.moveTo(cx - w / 2, bottom);
+      ctx.lineTo(cx, top);
+      ctx.lineTo(cx + w / 2, bottom);
+      ctx.closePath();
+      ctx.fill();
+    } else if (p.kind === "fins") {
+      const s = (p.span * z) / 2;                         // half of the fin span in pixels
+      ctx.fillRect(cx - w / 2, top, w, h);
+      ctx.beginPath();
+      ctx.moveTo(cx - w / 2, top + h * 0.15);
+      ctx.lineTo(cx - s, bottom);
+      ctx.lineTo(cx - w / 2, bottom);
+      ctx.moveTo(cx + w / 2, top + h * 0.15);
+      ctx.lineTo(cx + s, bottom);
+      ctx.lineTo(cx + w / 2, bottom);
+      ctx.fill();
+    }
+    up += p.length;
+  }
+}
+
+
+/* ---------------------------------------------------------------------
+   DRAWING: text panels and graphs
+   The text is rebuilt 10 times a second (not every frame) so it is
+   readable and creates less garbage for the browser to clean up.
+   --------------------------------------------------------------------- */
+let hudLines = [];
+let debugLines = [];
+let logLines = [];
+let textAge = 1;
+let frameMs = 16.7, simMs = 0, drawMs = 0, stepsLast = 0;
+
+function rebuildText() {
+  const motor = MOTORS[motorIndex];
+  hudLines = [
+    "Motor      " + motor.name + "  " + motor.totalImpulse.toFixed(1) + " N*s",
+    "State      " + flightState(),
+    "Altitude   " + sim.y.toFixed(1) + " m",
+    "Speed      " + sim.vy.toFixed(1) + " m/s",
+    "Accel      " + sim.ay.toFixed(1) + " m/s2",
+    "Thrust     " + sim.thrust.toFixed(1) + " N",
+    "Drag       " + sim.drag.toFixed(2) + " N",
+    "Dyn press  " + (sim.q / 1000).toFixed(2) + " kPa",
+    "Mass       " + (sim.mass * 1000).toFixed(1) + " g",
+    "Flight t   " + sim.t.toFixed(1) + " s",
+    "Apogee     " + sim.apogee.toFixed(1) + " m",
+    "Max speed  " + sim.maxSpeed.toFixed(1) + " m/s",
+    "Max accel  " + (sim.maxAccel / G).toFixed(1) + " g",
+    "Max Q      " + (sim.maxQ / 1000).toFixed(2) + " kPa"
+  ];
+  if (flightState() === "LANDED") hudLines.push("Impact     " + sim.impact.toFixed(1) + " m/s");
+
+  debugLines = [
+    "FPS        " + (1000 / frameMs).toFixed(0),
+    "Frame      " + frameMs.toFixed(1) + " ms",
+    "Sim        " + simMs.toFixed(2) + " ms, " + stepsLast + " steps",
+    "Draw       " + drawMs.toFixed(2) + " ms (CPU only)",
+    "Zoom       " + cam.zoom.toFixed(1) + " px/m",
+    "Air        " + airDensity(sim.y).toFixed(3) + " kg/m3",
+    "Samples    " + tele.n + " / " + TELE_CAP,
+    "Canvas     " + canvas.width + "x" + canvas.height + (sharp ? " sharp" : " fast")
+  ];
+
+  logLines = [];
+  for (let i = 0; i < tele.events.length; i++) {
+    logLines.push("T+" + tele.events[i].t.toFixed(2) + "  " + tele.events[i].label);
+  }
+}
+
+function panelWidth(lines) {
+  let chars = 0;
+  for (let i = 0; i < lines.length; i++) chars = Math.max(chars, lines[i].length);
+  return chars * 7.9 + 16;
+}
+function panelHeight(lines) { return lines.length * 17 + 16; }
+
+function drawPanel(x, y, lines) {
+  ctx.fillStyle = "rgba(10,14,18,0.55)";
+  ctx.fillRect(x, y, panelWidth(lines), panelHeight(lines));
+  ctx.fillStyle = "#e8eef2";
+  ctx.font = "13px monospace";
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], x + 8, y + 8 + i * 17);
+}
+
+/* Graph pages. ch = channel numbers from CHANNELS, mul converts units
+   for display (for example m/s2 into g). */
+const GRAPH_PAGES = [
+  [ { title: "Altitude (m)",      ch: [1],    mul: 1,     unit: "m" },
+    { title: "Speed (m/s)",       ch: [2],    mul: 1,     unit: "m/s" },
+    { title: "Acceleration (g)",  ch: [3],    mul: 1 / G, unit: "g" },
+    { title: "Thrust / Drag (N)", ch: [4, 5], mul: 1,     unit: "N" } ],
+  [ { title: "Mass (g)",                ch: [6], mul: 1000,  unit: "g" },
+    { title: "Dynamic pressure (kPa)",  ch: [7], mul: 0.001, unit: "kPa" },
+    { title: "Drag (N)",                ch: [5], mul: 1,     unit: "N" } ]
+];
+const SERIES_COLORS = ["#4aa3ff", "#ff9f43"];
+
+function fmt(v) {
+  const a = Math.abs(v);
+  return a >= 100 ? v.toFixed(0) : (a >= 10 ? v.toFixed(1) : v.toFixed(2));
+}
+
+function drawGraph(x, y, w, h, g) {
+  const L = 8, R = 8, T = 24, B = 18;
+  const px = x + L, py = y + T, pw = w - L - R, ph = h - T - B;
+  const n = tele.n;
+  const tt = tele.data[0];
+  const tMax = Math.max(5, n > 0 ? tt[n - 1] : 0);
+
+  // vertical range: always includes zero, with a little headroom
+  let lo = 0, hi = 1;
+  if (n > 0) {
+    lo = Infinity; hi = -Infinity;
+    for (let k = 0; k < g.ch.length; k++) {
+      lo = Math.min(lo, tele.lo[g.ch[k]] * g.mul);
+      hi = Math.max(hi, tele.hi[g.ch[k]] * g.mul);
+    }
+    lo = Math.min(lo, 0);
+    hi = Math.max(hi, 0);
+    if (hi - lo < 1e-9) hi = lo + 1;
+    hi += (hi - lo) * 0.06;
+  }
+  const span = hi - lo;
+
+  ctx.fillStyle = "rgba(10,14,18,0.6)";
+  ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1;
+
+  // zero line
+  if (lo < 0 && hi > 0) {
+    const zy = Math.round(py + ph - (0 - lo) / span * ph) + 0.5;
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.beginPath(); ctx.moveTo(px, zy); ctx.lineTo(px + pw, zy); ctx.stroke();
+  }
+  // flight events as faint vertical lines
+  ctx.strokeStyle = "rgba(255,255,255,0.18)";
+  ctx.beginPath();
+  for (let i = 0; i < tele.events.length; i++) {
+    const ex = Math.round(px + tele.events[i].t / tMax * pw) + 0.5;
+    ctx.moveTo(ex, py);
+    ctx.lineTo(ex, py + ph);
+  }
+  ctx.stroke();
+  // bottom axis
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.beginPath();
+  ctx.moveTo(px, py + ph + 0.5);
+  ctx.lineTo(px + pw, py + ph + 0.5);
+  ctx.stroke();
+
+  // data lines (at most one point per pixel column, so it stays cheap)
+  if (n > 1) {
+    const stride = Math.max(1, Math.floor(n / pw));
+    for (let k = 0; k < g.ch.length; k++) {
+      const arr = tele.data[g.ch[k]];
+      ctx.strokeStyle = SERIES_COLORS[k];
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < n; i += stride) {
+        const X = px + tt[i] / tMax * pw;
+        const Y = py + ph - (arr[i] * g.mul - lo) / span * ph;
+        if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+      }
+      const X2 = px + tt[n - 1] / tMax * pw;
+      const Y2 = py + ph - (arr[n - 1] * g.mul - lo) / span * ph;
+      ctx.lineTo(X2, Y2);
+      ctx.stroke();
+      ctx.fillStyle = SERIES_COLORS[k];
+      ctx.fillRect(X2 - 2, Y2 - 2, 4, 4);                 // dot at the latest value
+    }
+    ctx.lineWidth = 1;
+  }
+
+  // title (several channels get their own colours)
+  ctx.font = "12px monospace";
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  if (g.ch.length === 1) {
+    ctx.fillStyle = "#e8eef2";
+    ctx.fillText(g.title, x + L, y + 6);
+  } else {
+    let tx = x + L;
+    const names = g.title.split(" / ");
+    for (let k = 0; k < names.length; k++) {
+      ctx.fillStyle = SERIES_COLORS[k];
+      ctx.fillText(names[k], tx, y + 6);
+      tx += (names[k].length + 3) * 7.2;
+    }
+  }
+
+  if (n > 0) {
+    // current value, top right
+    let cur = "", peak = "";
+    for (let k = 0; k < g.ch.length; k++) {
+      cur += (k ? " / " : "") + fmt(tele.data[g.ch[k]][n - 1] * g.mul);
+      peak += (k ? " / " : "") + fmt(tele.hi[g.ch[k]] * g.mul);
+    }
+    ctx.fillStyle = "#e8eef2";
+    ctx.textAlign = "right";
+    ctx.fillText(cur, x + w - R, y + 6);
+    // bottom labels
+    ctx.font = "10px monospace";
+    ctx.textBaseline = "bottom";
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.textAlign = "center";
+    ctx.fillText("peak " + peak, x + w / 2, y + h - 3);
+    ctx.textAlign = "right";
+    ctx.fillText(Math.round(tMax) + " s", x + w - R, y + h - 3);
+    ctx.textAlign = "left";
+    ctx.fillText("0 s", x + L, y + h - 3);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawGraphs() {
+  if (graphPage < 0) return;
+  const page = GRAPH_PAGES[graphPage];
+  const gap = 10, h = 150;
+  const w = (Wc - gap * (page.length + 1)) / page.length;
+  const y = Hc - 32 - h;
+  for (let i = 0; i < page.length; i++) drawGraph(gap + i * (w + gap), y, w, h, page[i]);
+}
+
+function render(dtFrame) {
+  textAge += dtFrame;
+  if (textAge > 0.1) { rebuildText(); textAge = 0; }
+
+  drawSky();
+  drawAltitudeLines();
+  drawGround();
+  drawPad();
+  drawRocket();
+
+  drawPanel(12, 12, hudLines);
+  let rightY = 12;
+  if (showDebug) {
+    drawPanel(Wc - panelWidth(debugLines) - 12, rightY, debugLines);
+    rightY += panelHeight(debugLines) + 8;
+  }
+  if (logLines.length > 0) drawPanel(Wc - panelWidth(logLines) - 12, rightY, logLines);
+
+  drawGraphs();
+
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.font = "12px monospace";
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "left";
+  ctx.fillText("Space: launch   1 2 3: motor (before launch)   R: reset   G: graphs   E: export CSV   D: debug   H: sharp/fast", 12, Hc - 10);
+}
+
+
+/* ---------------------------------------------------------------------
+   INPUT
+   --------------------------------------------------------------------- */
+window.addEventListener("keydown", function (e) {
+  if (e.code === "Space") e.preventDefault();
+  if (e.repeat) return;
+  if (e.code === "Space") launch();
+  else if (e.code === "KeyR") resetSim();
+  else if (e.code === "KeyD") showDebug = !showDebug;
+  else if (e.code === "KeyH") { sharp = !sharp; resize(); }
+  else if (e.code === "KeyG") graphPage = (graphPage + 1 >= GRAPH_PAGES.length) ? -1 : graphPage + 1;
+  else if (e.code === "KeyE") exportCsv();
+  else if (!sim.ignited && e.code.indexOf("Digit") === 0) {
+    const n = parseInt(e.code.slice(5), 10) - 1;           // Digit1 -> 0
+    if (n >= 0 && n < MOTORS.length) { motorIndex = n; sim.mass = rocketMass(); }
+  }
+});
+window.addEventListener("resize", resize);
+
+
+/* ---------------------------------------------------------------------
+   MAIN LOOP
+   Physics runs in fixed slices of DT. The screen is drawn once per frame
+   at whatever speed the computer manages. If the computer falls behind,
+   the sim slows down instead of freezing (MAX_STEPS).
+   --------------------------------------------------------------------- */
+let last = performance.now();
+let acc = 0;
+
+function frame(now) {
+  const rawMs = Math.max(0, now - last);
+  last = now;
+  const dtFrame = Math.min(rawMs / 1000, 0.1);          // ignore huge gaps (hidden tab etc.)
+  frameMs += (Math.min(rawMs, 100) - frameMs) * 0.05;   // smoothed
+
+  acc += dtFrame;
+  const t0 = performance.now();
+  let steps = 0;
+  while (acc >= DT && steps < MAX_STEPS) {
+    step(DT);
+    acc -= DT;
+    steps++;
+  }
+  if (steps === MAX_STEPS) acc = 0;                     // drop the backlog instead of spiralling
+  const t1 = performance.now();
+
+  updateCamera(dtFrame);
+  render(dtFrame);
+  const t2 = performance.now();
+
+  simMs += ((t1 - t0) - simMs) * 0.05;
+  drawMs += ((t2 - t1) - drawMs) * 0.05;
+  stepsLast = steps;
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+resetSim();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
