@@ -3,16 +3,23 @@
 /* =====================================================================
    SIMULATION  (js/sim.js)
    Physics only. Nothing in this file knows about pixels or the screen.
-   World: y = up in meters, the ground is y = 0 (vertical flight for now).
+   World: x = right, y = up in meters, the ground is y = 0.
+   The rocket can now tilt: theta is the lean from vertical (+ = leaning
+   right), omega is how fast it is turning.
    ===================================================================== */
 
-/* What the player picked before launch (index into MOTORS, DELAYS, CHUTES).
+/* What the player picked before launch (index into MOTORS, DELAYS, CHUTES, WINDS).
    chute = -1 means no parachute. */
-const sel = { motor: 1, delay: 1, chute: 1 };
+const sel = { motor: 1, delay: 1, chute: 1, wind: 0 };
 
 const sim = {
   t: 0,                          // flight time: seconds since ignition
   y: 0, vy: 0, ay: 0,            // altitude, speed, acceleration
+  x: 0, vx: 0,                   // sideways position and speed
+  theta: 0, omega: 0,            // tilt (rad) and turn rate (rad/s)
+  cg: 0, cg0: 0,                 // center of gravity now / at ignition (m above the bottom)
+  offRod: false,                 // true once the rocket has cleared the launch rod
+  chuteUx: 0, chuteUy: 1,        // direction from the rocket to the canopy (for drawing)
   thrust: 0, drag: 0, mass: 0,   // newtons, newtons, kg
   q: 0,                          // dynamic pressure, Pa (air pushing on the rocket)
   ignited: false, burnedOut: false,
@@ -44,6 +51,12 @@ function motorMass() {                            // dry case + the fuel that is
 
 function chuteMass() { return sel.chute >= 0 ? CHUTES[sel.chute].mass : 0; }
 
+function partMass(p) {
+  if (p.kind === "motor") return motorMass();
+  if (p.kind === "chute") return chuteMass();
+  return p.mass;
+}
+
 function rocketMass() {
   let total = 0;
   for (let i = 0; i < rocket.parts.length; i++) {
@@ -54,6 +67,40 @@ function rocketMass() {
   }
   return total;
 }
+
+/* Center of gravity: the balance point, as a height above the bottom.
+   It moves up the rocket as the motor burns its fuel. */
+function rocketCG() {
+  let m = 0, mx = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i], pm = partMass(p);
+    m += pm; mx += pm * p.at;
+  }
+  return mx / m;
+}
+
+/* Moment of inertia about the CG (kg*m^2): how hard the rocket is to spin.
+   Each part counts by its distance from the CG, plus its own length. */
+function rocketInertia(cg) {
+  let I = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i], d = p.at - cg;
+    I += partMass(p) * (d * d + p.length * p.length / 12);
+  }
+  return I;
+}
+
+/* Center of pressure: where the sideways air force acts. If it is BELOW
+   the CG the rocket is stable and swings back into the wind. */
+function rocketCP() {
+  let cn = 0, cnx = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i];
+    if (p.cn) { cn += p.cn; cnx += p.cn * p.cpAt; }
+  }
+  return cnx / cn;
+}
+const ROCKET_CP = rocketCP();
 
 function rocketCdA() {                            // drag area of the airframe
   let total = 0;
@@ -90,6 +137,12 @@ function flightState() {
   return sim.chuteDeployed ? "CHUTE" : "FALL";
 }
 
+function refreshLoadout() {                       // call whenever motor/chute choice changes
+  sim.mass = rocketMass();
+  sim.cg = rocketCG();
+  sim.cg0 = sim.cg;                               // the rocket is drawn turning about this point
+}
+
 function step(dt) {
   const motor = MOTORS[sel.motor];
 
@@ -120,34 +173,93 @@ function step(dt) {
   }
   if (sim.chuteDeployed) sim.chuteOpen = Math.min(1, (sim.t - sim.deployT) / CHUTE_OPEN_TIME);
 
-  // 3) forces (newtons, up is positive)
+  // 3) forces (newtons, up and right are positive)
   const m = rocketMass();
   sim.mass = m;
+  const cg = rocketCG();
+  sim.cg = cg;
   const rho = airDensity(sim.y);
-  const cdA = rocketCdA() + chuteCdA() * sim.chuteOpen;
-  const dragMag = 0.5 * rho * sim.vy * sim.vy * cdA;
-  const dragForce = sim.vy > 0 ? -dragMag : (sim.vy < 0 ? dragMag : 0);   // always opposes motion
+  const cdA = rocketCdA();                        // airframe only. The chute is handled below
+
+  // the rocket's velocity relative to the air (the wind blows toward +x)
+  const rx = sim.vx - WINDS[sel.wind];
+  const ry = sim.vy;
+  const V2 = rx * rx + ry * ry;
+  const V = Math.sqrt(V2);
+
+  // airframe drag: pushes against the motion through the air
+  const dragMag = 0.5 * rho * V2 * cdA;
   sim.drag = dragMag;
-  const net = thrust - m * G + dragForce;
+  const dragX = V > 0 ? -dragMag * (rx / V) : 0;
+  const dragY = V > 0 ? -dragMag * (ry / V) : 0;
+
+  // sideways air force on the nose and fins (same as before)
+  const sn = Math.sin(sim.theta), cs = Math.cos(sim.theta);
+  const vn = rx * cs - ry * sn;
+  const k = 0.5 * rho * A_REF * V;
+  let sideF = 0, torque = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i];
+    if (!p.cn) continue;
+    const r = p.cpAt - cg;
+    const f = -k * p.cn * (vn + sim.omega * r);
+    sideF += f;
+    torque += f * r;
+  }
+
+  // parachute: drag from the air moving past the tie-on point (which moves
+  // with the rocket's spin too). The pull goes through that point, so a pull
+  // above the CG swings the rocket round to hang from it.
+  let chuteFx = 0, chuteFy = 0;
+  const chuteArea = chuteCdA() * sim.chuteOpen;
+  if (chuteArea > 0) {
+    const a = CHUTE_ATTACH_AT - cg;               // tie-on point, height above the CG
+    const px = rx + sim.omega * a * cs;
+    const py = ry - sim.omega * a * sn;
+    const Vp = Math.sqrt(px * px + py * py);
+    if (Vp > 0) {
+      const mag = 0.5 * rho * Vp * Vp * chuteArea;
+      chuteFx = -mag * (px / Vp);
+      chuteFy = -mag * (py / Vp);
+      sim.chuteUx = -px / Vp;
+      sim.chuteUy = -py / Vp;
+      sim.drag += mag;
+      torque += a * (chuteFx * cs - chuteFy * sn);
+    }
+  }
+
+  const net  = thrust * cs - m * G + dragY - sideF * sn + chuteFy;   // up
+  const netX = thrust * sn + dragX + sideF * cs + chuteFx;           // right
 
   // 4) move
   if (sim.y <= 0 && net <= 0) {
     sim.y = 0; sim.vy = 0; sim.ay = 0;            // sitting on the pad
+    sim.vx = 0; sim.omega = 0;
   } else {
     sim.ay = net / m;
     sim.vy += sim.ay * dt;                        // velocity first...
     sim.y  += sim.vy * dt;                        // ...then position (semi-implicit Euler)
+    if (sim.offRod) {
+      sim.vx    += (netX / m) * dt;
+      sim.omega += (torque / rocketInertia(cg)) * dt;
+      sim.x     += sim.vx * dt;
+      sim.theta += sim.omega * dt;
+    } else if (sim.y >= ROD_LENGTH) {
+      sim.offRod = true;                          // the rod held it straight until now
+    }
     if (sim.y < 0) {                              // touchdown
       sim.impact = -sim.vy;
       sim.verdict = landingVerdict(sim.impact);
       sim.y = 0; sim.vy = 0;
+      sim.vx = 0; sim.omega = 0;
       sim.burnedOut = true;
       teleEvent("Touchdown  " + sim.impact.toFixed(1) + " m/s  " + sim.verdict);
     }
   }
 
   // 5) flight stats and events
-  sim.q = 0.5 * airDensity(sim.y) * sim.vy * sim.vy;
+  const qx = sim.vx - WINDS[sel.wind];
+  sim.q = 0.5 * airDensity(sim.y) * (qx * qx + sim.vy * sim.vy);
   if (sim.y > sim.apogee) sim.apogee = sim.y;
   if (Math.abs(sim.vy) > sim.maxSpeed) sim.maxSpeed = Math.abs(sim.vy);
   if (sim.ay > sim.maxAccel) sim.maxAccel = sim.ay;
@@ -175,6 +287,7 @@ function launch() {
 
 function resetSim() {
   sim.t = 0; sim.y = 0; sim.vy = 0; sim.ay = 0;
+  sim.x = 0; sim.vx = 0; sim.theta = 0; sim.omega = 0; sim.offRod = false;
   sim.thrust = 0; sim.drag = 0; sim.q = 0;
   sim.ignited = false; sim.burnedOut = false;
   sim.motorT = 0; sim.impulse = 0;
@@ -182,6 +295,6 @@ function resetSim() {
   sim.prevVy = 0; sim.apogeeLogged = false;
   sim.apogee = 0; sim.maxSpeed = 0; sim.maxAccel = 0; sim.maxQ = 0; sim.maxShock = 0;
   sim.impact = 0; sim.verdict = "";
-  sim.mass = rocketMass();
+  refreshLoadout();
   teleReset();
 }

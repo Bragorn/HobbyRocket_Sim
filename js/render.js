@@ -75,6 +75,27 @@ function drawGround() {
   ctx.fillRect(0, gy, Wc, 3);
 }
 
+function drawGroundMarks() {                              // a tick and a label every few meters
+  const gy = sy(0);
+  if (gy > Hc - 4 || gy < 0) return;
+  const stepM = Math.max(1, niceStep(160 / cam.zoom));
+  const left = cam.x - (Wc / 2) / cam.zoom, right = cam.x + (Wc / 2) / cam.zoom;
+  ctx.strokeStyle = "rgba(255,255,255,0.45)";
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.font = "11px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.beginPath();
+  for (let k = Math.ceil(left / stepM); k * stepM <= right; k++) {
+    const px = Math.round(sx(k * stepM)) + 0.5;
+    ctx.moveTo(px, gy);
+    ctx.lineTo(px, gy + 8);
+    ctx.fillText(k * stepM + " m", px, gy + 11);
+  }
+  ctx.stroke();
+  ctx.textAlign = "left";
+}
+
 function drawPad() {
   const gy = sy(0);
   const z = cam.zoom;
@@ -98,32 +119,40 @@ function drawFlame(cx, baseY, z) {
   ctx.fill();
 }
 
-function drawChute(cx, noseY, z) {                        // canopy and lines above the nose
+function drawChute() {                                    // drawn in world space, pointing where the pull goes
   if (!sim.chuteDeployed || sel.chute < 0) return;
-  const c = CHUTES[sel.chute];
-  const open = sim.chuteOpen;
-  const w = c.diameter * z * (0.25 + 0.75 * open);        // starts as a small bundle, then blooms open
-  const lineLen = 0.35 * z * (0.4 + 0.6 * open);
-  const cy = noseY - lineLen;
+  const c = CHUTES[sel.chute], z = cam.zoom, open = sim.chuteOpen;
+  const a = CHUTE_ATTACH_AT - sim.cg0;
+  const ax = sim.x + a * Math.sin(sim.theta);
+  const ay = sim.y + sim.cg0 + a * Math.cos(sim.theta);   // tie-on point in meters
+  const lineLen = CHUTE_LINE * (0.4 + 0.6 * open);
+  const w = c.diameter * z * (0.25 + 0.75 * open);        // canopy width in pixels
+  const ccx = sx(ax + sim.chuteUx * lineLen);
+  const ccy = sy(ay + sim.chuteUy * lineLen);             // canopy center on screen
+  ctx.save();
+  ctx.translate(ccx, ccy);
+  ctx.rotate(Math.atan2(sim.chuteUx, sim.chuteUy));       // dome faces away from the rocket
   ctx.strokeStyle = "rgba(20,20,20,0.7)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(cx - w / 2, cy);
-  ctx.lineTo(cx, noseY);
-  ctx.moveTo(cx + w / 2, cy);
-  ctx.lineTo(cx, noseY);
+  ctx.moveTo(-w / 2, 0); ctx.lineTo(0, lineLen * z);
+  ctx.moveTo(w / 2, 0);  ctx.lineTo(0, lineLen * z);
   ctx.stroke();
   ctx.fillStyle = c.color;
   ctx.beginPath();
-  ctx.ellipse(cx, cy, w / 2, w * 0.28, 0, Math.PI, 2 * Math.PI);
+  ctx.ellipse(0, 0, w / 2, w * 0.28, 0, Math.PI, 2 * Math.PI);
   ctx.closePath();
   ctx.fill();
+  ctx.restore();
 }
 
 function drawRocket() {
   const z = cam.zoom;
-  const cx = sx(0);
-  const baseY = sy(sim.y);
+  ctx.save();
+  ctx.translate(sx(sim.x), sy(sim.y + sim.cg0));   // origin = the balance point
+  ctx.rotate(sim.theta);
+  const cx = 0;
+  const baseY = sim.cg0 * z;                       // the bottom of the rocket hangs this far below it
 
   if (sim.thrust > 0) drawFlame(cx, baseY, z);
 
@@ -168,8 +197,7 @@ function drawRocket() {
     }
     up += p.length;
   }
-
-  drawChute(cx, baseY - ROCKET_H * z, z);
+  ctx.restore();
 }
 
 /* One full frame. The text and graphs live in hud.js. */
@@ -177,7 +205,9 @@ function render(dtFrame) {
   drawSky();
   drawAltitudeLines();
   drawGround();
+  drawGroundMarks();
   drawPad();
   drawRocket();
+  drawChute();
   drawHud(dtFrame);
 }

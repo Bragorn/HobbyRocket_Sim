@@ -13,6 +13,9 @@ const G = 9.81;              // gravity, m/s^2
 const RHO0 = 1.225;          // air density at sea level, kg/m^3
 const SCALE_HEIGHT = 8500;   // air thins by a factor of e every 8500 m
 const DRAG_TUNE = 1.0;       // multiplies airframe drag. Try 1.5 or 2 for a snappier slowdown.
+const ROD_LENGTH = 1.0;                  // launch rod height, m. The rocket can't tilt until it clears this
+const A_REF = Math.PI * 0.0125 * 0.0125; // body cross-section area, m^2 (25 mm tube)
+const WINDS = [0, 2, 5, 8];              // wind speeds (m/s, blowing toward +x). Press W before launch to cycle
 
 /* ---- landing verdicts (impact speed in m/s) ---- */
 const SAFE_LANDING_SPEED = 8;    // at or below this: SAFE
@@ -20,6 +23,8 @@ const CRASH_SPEED = 15;          // above this: CRASH. In between: HARD
 
 /* ---- parachute ---- */
 const CHUTE_OPEN_TIME = 0.4;     // seconds from deployment to fully open
+const CHUTE_ATTACH_AT = 0.36;   // where the shock cord ties on, m above the bottom (base of the nose cone)
+const CHUTE_LINE = 0.35;        // drawn length of the lines, m (looks only, no physics)
 
 /* ---- telemetry ---- */
 const TELE_RATE = 60;            // samples per second of flight
@@ -87,10 +92,24 @@ for (let i = 0; i < CHUTES.length; i++) {
    --------------------------------------------------------------------- */
 const rocket = {
   parts: [
-    { name: "Fins",      kind: "fins",  length: 0.06, width: 0.025, span: 0.060, mass: 0.008, cdA: 0.8e-4, color: "#c0392b" },
+    { name: "Fins",      kind: "fins",  length: 0.06, width: 0.025, span: 0.060, mass: 0.008, cdA: 0.8e-4, cn: 6.0, cpAt: 0.01, color: "#c0392b" },
     { name: "Body tube", kind: "tube",  length: 0.30, width: 0.025,              mass: 0.030, cdA: 0.8e-4, color: "#ecf0f1" },
-    { name: "Nose cone", kind: "nose",  length: 0.08, width: 0.025,              mass: 0.010, cdA: 1.0e-4, color: "#e67e22" },
-    { name: "Motor",     kind: "motor", length: 0.07, width: 0.018,              mass: 0,     cdA: 0,      color: "#34495e", inside: true },
-    { name: "Parachute", kind: "chute", length: 0,    width: 0,                  mass: 0,     cdA: 0,      color: "#f5c542", inside: true }
+    { name: "Nose cone", kind: "nose",  length: 0.08, width: 0.025,              mass: 0.010, cdA: 1.0e-4, cn: 2.0, cpAt: 0.40, color: "#e67e22" },
+    { name: "Motor",     kind: "motor", length: 0.07, width: 0.018,              mass: 0,     cdA: 0,      at: 0.035, color: "#34495e", inside: true },
+    { name: "Parachute", kind: "chute", length: 0,    width: 0,                  mass: 0,     cdA: 0,      at: 0.30,  color: "#f5c542", inside: true }
   ]
 };
+
+/* New part fields:
+   at   = height of the part's own center above the bottom of the rocket (m).
+          Worked out below for stacked parts; set by hand for inside parts.
+   cn   = how hard the part pushes sideways when the air hits it at an angle
+          (bigger = stronger). Nose and fins do almost all of it; a plain tube adds ~0.
+   cpAt = height (m above the bottom) where that sideways push acts. */
+{
+  let up = 0;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i];
+    if (!p.inside) { p.at = up + p.length / 2; up += p.length; }
+  }
+}

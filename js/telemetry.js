@@ -16,7 +16,9 @@ const CHANNELS = [                     // index = position in tele.data
   { key: "drag",   label: "Drag",             csv: "drag_N" },
   { key: "mass",   label: "Mass",             csv: "mass_kg" },
   { key: "q",      label: "Dynamic pressure", csv: "dynpressure_Pa" },
-  { key: "chute",  label: "Chute open",       csv: "chute_open" }
+  { key: "chute",  label: "Chute open",       csv: "chute_open" },
+  { key: "x",      label: "Downrange",        csv: "x_m" },
+  { key: "theta",  label: "Tilt",             csv: "theta_rad" }
 ];
 
 const tele = { n: 0, nextT: 0, done: false, data: [], lo: [], hi: [], events: [] };
@@ -55,6 +57,8 @@ function teleRecord(force) {
   teleSet(6, i, sim.mass);
   teleSet(7, i, sim.q);
   teleSet(8, i, sim.chuteOpen);
+  teleSet(9, i, sim.x);
+  teleSet(10, i, sim.theta);
 }
 
 function buildCsv() {

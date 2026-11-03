@@ -120,5 +120,16 @@ try {
   check(Math.abs(get("cam.zoom") - 64 / get("ROCKET_H")) < 1e-9, `camera zoom is fixed by rocket size (${get("cam.zoom").toFixed(0)} px/m)`);
 } catch (e) { check(false, "exception: " + e.stack); }
 
+/* ---- 5. rotation ---- */
+console.log("\n5. Rotation");
+sel.wind = 0; fly(1, 1, 1);
+check(tele.lo[10] === 0 && tele.hi[10] === 0 && sim.x === 0, "no wind: the rocket stays perfectly vertical");
+sel.wind = 2; fly(1, 1, -1);
+check(tele.lo[10] < -0.01, `5 m/s wind: the rocket leans into the wind (max lean ${(tele.lo[10] * 180 / Math.PI).toFixed(1)} deg)`);
+check(Number.isFinite(sim.x) && Number.isFinite(sim.theta), "numbers stay finite while tilted");
+sel.wind = 2; fly(1, 1, 1);
+check(Math.cos(sim.theta) > 0.7, `under the chute the rocket hangs nose-up (tilt at landing ${(sim.theta * 180 / Math.PI).toFixed(0)} deg)`);
+sel.wind = 0;
+
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);
