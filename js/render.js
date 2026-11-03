@@ -161,10 +161,16 @@ function drawRocket() {
     const p = rocket.parts[i];
     const w = p.width * z;
 
-    if (p.inside) {                                       // motor: only the nozzle shows
+    if (p.inside) {                                       // motor and chute: show what you picked
       if (p.kind === "motor") {
         ctx.fillStyle = p.color;
-        ctx.fillRect(cx - w * 0.4, baseY, w * 0.8, Math.max(2, 0.01 * z));
+        ctx.fillRect(cx - w * 0.4, baseY, w * 0.8, Math.max(2, 0.01 * z));          // nozzle
+        ctx.fillStyle = sel.chute >= 0 ? DELAY_COLORS[sel.delay] : p.color;
+        ctx.fillRect(cx - 0.0125 * z, baseY - 0.02 * z, 0.025 * z, Math.max(3, 0.02 * z));   // delay band
+      } else if (p.kind === "chute" && sel.chute >= 0 && !sim.chuteDeployed) {
+        const c = CHUTES[sel.chute], bh = Math.max(2, c.diameter * 0.1 * z);
+        ctx.fillStyle = c.color;
+        ctx.fillRect(cx - 0.0125 * z, baseY - p.at * z - bh / 2, 0.025 * z, bh);      // packed chute
       }
       continue;
     }

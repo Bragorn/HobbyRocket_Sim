@@ -18,6 +18,7 @@ window.addEventListener("keydown", function (e) {
   else if (e.code === "KeyW" && !sim.ignited) sel.wind = (sel.wind + 1) % WINDS.length;
   else if (e.code === "KeyQ" && !sim.ignited) sel.windDir = -sel.windDir;
   else if (e.code === "KeyA" && !sim.ignited) { sel.angle = (sel.angle + 1) % ANGLES.length; refreshLoadout(); }
+  else if (e.code === "KeyT") warp = warp === 1 ? 4 : warp === 4 ? 16 : 1;
   else if (!sim.ignited && e.code.indexOf("Digit") === 0) {
     const n = parseInt(e.code.slice(5), 10);
     if (n >= 1 && n <= 3 && n - 1 < MOTORS.length) sel.motor = n - 1;          // 1-3 motor

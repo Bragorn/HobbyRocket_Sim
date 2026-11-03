@@ -68,7 +68,7 @@ for (let i = 0; i < MOTORS.length; i++) {         // work out burn time and tota
    seconds AFTER the motor burns out and pushes the parachute out.
    --------------------------------------------------------------------- */
 const DELAYS = [3, 5, 7];
-
+const DELAY_COLORS = ["#3498db", "#2ecc71", "#e74c3c"];   // 3 s blue, 5 s green, 7 s red
 
 /* ---------------------------------------------------------------------
    PARACHUTES (first guesses, to be tested and then locked in)
