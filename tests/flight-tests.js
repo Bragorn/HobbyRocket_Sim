@@ -37,6 +37,9 @@ for (const f of FILES) vm.runInContext(fs.readFileSync(path.join(root, "js", f +
 const get = (expr) => vm.runInContext(expr, context);
 const sel = get("sel"), sim = get("sim"), tele = get("tele"), DT = get("DT"), MOTORS = get("MOTORS"), DELAYS = get("DELAYS"), CHUTES = get("CHUTES");
 const key = (code) => listeners.keydown({ code, repeat: false, preventDefault() {} });
+const launchOpts = get("launchOpts");
+launchOpts.imperfect = false;                     // tests stay exact unless a section turns this on
+launchOpts.seed = 12345;
 
 function fly(motor, delay, chute) {
   sel.motor = motor; sel.delay = delay; sel.chute = chute;
@@ -45,10 +48,17 @@ function fly(motor, delay, chute) {
   let n = 0;
   while (sandbox.flightState() !== "LANDED" && n < 240 * 600) { sandbox.step(DT); n++; }
   const ev = tele.events.find(e => e.label.indexOf("Chute out") === 0);
+  let worstPct = 0, worstName = "-";              // how close the most loaded part came to breaking
+  for (const p of get("rocket.parts")) {
+    const lim = p.maxSide || p.maxPull;
+    let pct = lim ? p.peak / lim : 0;
+    if (p.maxQ) pct = Math.max(pct, sim.maxQ / p.maxQ);
+    if (pct * 100 > worstPct) { worstPct = pct * 100; worstName = p.name; }
+  }  
   return {
     apogee: sim.apogee, flight: sim.t, impact: sim.impact, verdict: sim.verdict,
     deployT: ev ? ev.t : null, deployText: ev ? ev.label.replace("Chute out  ", "") : "-",
-    shockG: sim.maxShock / 9.81, samples: tele.n
+    shockG: sim.maxShock / 9.81, samples: tele.n, worstPct, worstName,
   };
 }
 
@@ -69,7 +79,7 @@ for (const [name, idx] of [["A", 0], ["E", 2]]) {
 /* ---- 2. the full table ---- */
 console.log("\n2. Every combination (delay = seconds after burnout, chute S/M/L or none)");
 const lines = [];
-lines.push("motor delay chute | apogee | chute out (T+ s, where)     | peak g | impact | verdict | flight");
+lines.push("motor delay chute | apogee | chute out (T+ s, where)     | peak g | impact | verdict | flight | most loaded part");
 for (let m = 0; m < MOTORS.length; m++) {
   for (let d = 0; d < DELAYS.length; d++) {
     for (const c of [-1, 0, 1, 2]) {
@@ -81,7 +91,7 @@ for (let m = 0; m < MOTORS.length; m++) {
         `${r.apogee.toFixed(0)} m`.padEnd(7) + "| " +
         (r.deployT === null ? "never".padEnd(28) : `${r.deployT.toFixed(1)} s  ${r.deployText}`.padEnd(28)) + "| " +
         `${r.shockG.toFixed(0)} g`.padEnd(7) + "| " +
-        `${r.impact.toFixed(1)}`.padEnd(7) + "| " + r.verdict.padEnd(8) + "| " + r.flight.toFixed(1) + " s"
+        `${r.impact.toFixed(1)}`.padEnd(7) + "| " + r.verdict.padEnd(8) + "| " + (r.flight.toFixed(1) + " s").padEnd(8) + "| " + r.worstName + " " + r.worstPct.toFixed(0) + "%"
       );
     }
   }
@@ -123,6 +133,7 @@ try {
 /* ---- 5. rotation ---- */
 console.log("\n5. Rotation");
 sel.wind = 0; fly(1, 1, 1);
+check(tele.hi[12] === 0, "no wind, no tilt: angle of attack stays exactly 0");
 check(tele.lo[10] === 0 && tele.hi[10] === 0 && sim.x === 0, "no wind: the rocket stays perfectly vertical");
 sel.wind = 2; fly(1, 1, -1);
 check(tele.lo[10] < -0.01, `5 m/s wind: the rocket leans into the wind (max lean ${(tele.lo[10] * 180 / Math.PI).toFixed(1)} deg)`);
@@ -139,6 +150,69 @@ fly(2, 0, 1);
 check(broken().includes("Parachute") && sim.verdict !== "SAFE", `E motor, 3 s delay, M chute: the cord snaps (${broken().join(", ")}) and it lands ${sim.verdict}`);
 fly(1, 1, 1);
 check(broken().length === 0, "C motor, 5 s delay, M chute: nothing breaks");
+
+/* ---- 7. forced failures: weaken one limit on purpose, check that it breaks ---- */
+console.log("\n7. Forced failures (a limit is weakened on purpose, then put back)");
+const partNamed = (n) => get("rocket.parts").find(p => p.name === n);
+const fins = partNamed("Fins"), nose = partNamed("Nose cone");
+const keep = { finSide: fins.maxSide, finQ: fins.maxQ, noseSide: nose.maxSide };
+sel.wind = 2;
+fins.maxSide = 0.05; fly(1, 1, -1); fins.maxSide = keep.finSide;
+check(broken().includes("Fins"), `fins with a 0.05 N limit snap off in 5 m/s wind (peak ${fins.peak.toFixed(2)} N)`);
+check(sim.cg < get("rocketCP()"), "without fins the center of pressure is above the center of gravity: unstable");
+sel.wind = 0;
+fins.maxQ = 5000; fly(2, 1, -1); fins.maxQ = keep.finQ;
+check(broken().includes("Fins") && tele.events.some(e => e.label.indexOf("fluttered apart") >= 0), `E motor with a 5 kPa flutter limit: fins flutter apart (max Q ${(sim.maxQ / 1000).toFixed(1)} kPa)`);
+sel.wind = 2;
+nose.maxSide = 0.05; fly(1, 1, -1); nose.maxSide = keep.noseSide;
+check(broken().includes("Nose cone"), "nose cone with a 0.05 N limit snaps off in 5 m/s wind");
+fly(1, 1, 1);
+check(broken().length === 0, "real limits restored: nothing breaks on a normal C flight");
+check(tele.hi[13] > 0 && tele.hi[13] <= partNamed("Parachute").maxPull, `chute pull peaks at ${tele.hi[13].toFixed(1)} N, under the cord limit`);
+sel.wind = 0;
+
+/* ---- 8. launch setup ---- */
+console.log("\n8. Launch setup: angle, wind direction, imperfections");
+sel.angle = 4; fly(1, 1, -1);
+check(sim.x > 5, `rod tilted +10 deg: lands downrange to the right (${sim.x.toFixed(0)} m)`);
+sel.angle = 0; fly(1, 1, -1);
+check(sim.x < -5, `rod tilted -10 deg: lands to the left (${sim.x.toFixed(0)} m)`);
+sel.angle = 2;
+sel.wind = 2; sel.windDir = -1; fly(1, 1, -1);
+check(tele.hi[10] > 0.01, `wind blowing toward -x: the rocket leans right, into it (max lean ${(tele.hi[10] * 180 / Math.PI).toFixed(1)} deg)`);
+check(tele.lo[11] === -5 && tele.hi[11] === -5, "wind channel records 5 m/s toward -x");
+sel.windDir = 1; sel.wind = 2;
+launchOpts.imperfect = true; launchOpts.seed = 777;
+fly(1, 1, -1); const a1 = { x: sim.x, ap: sim.apogee };
+fly(1, 1, -1); const a2 = { x: sim.x, ap: sim.apogee };
+check(a1.x === a2.x && a1.ap === a2.ap, "imperfections on, same seed: identical flight");
+launchOpts.seed = 778; fly(1, 1, -1);
+check(sim.x !== a1.x, "a different seed gives a different flight");
+sel.wind = 0; launchOpts.seed = 777; fly(1, 1, -1);
+check(tele.lo[10] !== 0 || tele.hi[10] !== 0, "imperfections on, no wind: the crooked rod still starts a lean");
+const lean = Math.max(Math.abs(tele.lo[10]), Math.abs(tele.hi[10]));
+console.log(`  info    max lean with no wind, no chute: ${(lean * 180 / Math.PI).toFixed(0)} deg (a tumble would show 90 or more)`);
+launchOpts.imperfect = false;
+
+/* ---- 9. keys for the new options ---- */
+console.log("\n9. Keys");
+sandbox.resetAll();
+key("KeyA");
+check(sel.angle === 3 && Math.abs(sim.theta - 5 * Math.PI / 180) < 1e-9, "A tilts the rocket on the pad to 5 deg");
+key("KeyQ"); check(sel.windDir === -1, "Q flips the wind direction"); key("KeyQ");
+sel.angle = 2; sandbox.resetAll();
+
+/* ---- information only: how close do parts get to their limits? ---- */
+console.log("\n   Stress table (most loaded part, as % of its limit; nothing here is a pass/fail)");
+for (const w of [0, 2, 3, 4, 5]) {
+  sel.wind = w;
+  for (const mi of [1, 2]) {
+    const r = fly(mi, 1, 1);
+    console.log(`   wind ${String(WINDS_()[w]).padStart(2)} m/s  motor ${MOTORS[mi].name}  ${r.worstName} ${r.worstPct.toFixed(0)}%  ${r.verdict}`);
+  }
+}
+sel.wind = 0;
+function WINDS_() { return get("WINDS"); }
 
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);

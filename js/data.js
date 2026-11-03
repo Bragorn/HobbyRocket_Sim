@@ -15,7 +15,12 @@ const SCALE_HEIGHT = 8500;   // air thins by a factor of e every 8500 m
 const DRAG_TUNE = 1.0;       // multiplies airframe drag. Try 1.5 or 2 for a snappier slowdown.
 const ROD_LENGTH = 1.0;                  // launch rod height, m. The rocket can't tilt until it clears this
 const A_REF = Math.PI * 0.0125 * 0.0125; // body cross-section area, m^2 (25 mm tube)
-const WINDS = [0, 2, 5, 8];              // wind speeds (m/s, blowing toward +x). Press W before launch to cycle
+const WINDS = [0, 2, 5, 8, 12, 20];      // wind speeds, m/s. W cycles them (20 is a storm, for stress tests)
+
+/* ---- launch setup ---- */
+const ANGLES = [-10, -5, 0, 5, 10];      // launch rod tilt in degrees (+ leans right). A cycles them
+const ROD_ERROR_DEG = 0.7;               // random rod/rocket misalignment, up to +/- this many degrees
+const launchOpts = { imperfect: true, seed: 0 };   // seed 0 = a new random one every launch. Tests set a fixed one
 
 /* ---- landing verdicts (impact speed in m/s) ---- */
 const SAFE_LANDING_SPEED = 8;    // at or below this: SAFE

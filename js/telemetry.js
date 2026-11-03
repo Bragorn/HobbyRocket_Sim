@@ -18,7 +18,10 @@ const CHANNELS = [                     // index = position in tele.data
   { key: "q",      label: "Dynamic pressure", csv: "dynpressure_Pa" },
   { key: "chute",  label: "Chute open",       csv: "chute_open" },
   { key: "x",      label: "Downrange",        csv: "x_m" },
-  { key: "theta",  label: "Tilt",             csv: "theta_rad" }
+  { key: "theta",  label: "Tilt",             csv: "theta_rad" },
+  { key: "wind",   label: "Wind",             csv: "wind_ms" },
+  { key: "aoa",    label: "Angle of attack",  csv: "aoa_rad" },
+  { key: "pull",   label: "Chute pull",       csv: "chute_pull_N" }
 ];
 
 const tele = { n: 0, nextT: 0, done: false, data: [], lo: [], hi: [], events: [] };
@@ -59,6 +62,9 @@ function teleRecord(force) {
   teleSet(8, i, sim.chuteOpen);
   teleSet(9, i, sim.x);
   teleSet(10, i, sim.theta);
+  teleSet(11, i, sim.wind);
+  teleSet(12, i, sim.aoa);
+  teleSet(13, i, sim.chutePull);
 }
 
 function buildCsv() {
@@ -79,7 +85,8 @@ function exportCsv() {
   const blob = new Blob([buildCsv()], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "flight-motor-" + MOTORS[sel.motor].name + "-delay" + DELAYS[sel.delay] + "-chute" + chuteName + ".csv";
+  const tag = "-wind" + WINDS[sel.wind] + (sel.windDir > 0 ? "R" : "L") + "-ang" + ANGLES[sel.angle] + (launchOpts.imperfect ? "-seed" + sim.seed : "-ideal");
+  a.download = "flight-motor-" + MOTORS[sel.motor].name + "-delay" + DELAYS[sel.delay] + "-chute" + chuteName + tag + ".csv";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

@@ -22,7 +22,9 @@ function rebuildText() {
     "Delay      " + (chute ? DELAYS[sel.delay] + " s  (T+" + (motor.burnTime + DELAYS[sel.delay]).toFixed(1) + ")" : "-"),
     "Chute      " + (chute ? chute.name + "  " + (chute.diameter * 100).toFixed(0) + " cm" + (sim.chuteDeployed ? "  OPEN" : "") : "none"),
     "State      " + state,
-    "Wind       " + WINDS[sel.wind] + " m/s",
+    "Wind       " + (WINDS[sel.wind] === 0 ? "calm" : WINDS[sel.wind] + " m/s " + (sel.windDir > 0 ? "->" : "<-")),
+    "Launch ang " + ANGLES[sel.angle] + " deg",
+    "Seed       " + (sim.ignited ? sim.seed : "-"),
     "Tilt       " + (sim.theta * 180 / Math.PI).toFixed(1) + " deg",
     "Stability  " + (rocketCP() === null ? "no fins/nose" : ((sim.cg - rocketCP()) / 0.025).toFixed(1) + " cal"),
     "Altitude   " + sim.y.toFixed(1) + " m",
@@ -94,7 +96,11 @@ const GRAPH_PAGES = [
   [ { title: "Mass (g)",                ch: [6], mul: 1000,  unit: "g" },
     { title: "Dynamic pressure (kPa)",  ch: [7], mul: 0.001, unit: "kPa" },
     { title: "Drag (N)",                ch: [5], mul: 1,     unit: "N" },
-    { title: "Chute open (%)",          ch: [8], mul: 100,   unit: "%" } ]
+    { title: "Chute open (%)",          ch: [8], mul: 100,   unit: "%" } ],
+  [ { title: "Tilt (deg)",              ch: [10], mul: 180 / Math.PI, unit: "deg" },
+    { title: "Angle of attack (deg)",   ch: [12], mul: 180 / Math.PI, unit: "deg" },
+    { title: "Wind (m/s)",              ch: [11], mul: 1,             unit: "m/s" },
+    { title: "Chute pull (N)",          ch: [13], mul: 1,             unit: "N" } ]
 ];
 const SERIES_COLORS = ["#4aa3ff", "#ff9f43"];
 
@@ -218,8 +224,27 @@ function drawGraphs() {
   const page = GRAPH_PAGES[graphPage];
   const gap = 10, h = 150;
   const w = (Wc - gap * (page.length + 1)) / page.length;
-  const y = Hc - 32 - h;
+  const y = Hc - 48 - h;
   for (let i = 0; i < page.length; i++) drawGraph(gap + i * (w + gap), y, w, h, page[i]);
+}
+
+function drawWindArrow(x, y) {                    // live wind, gusts included
+  const w = windNow();
+  ctx.fillStyle = "rgba(10,14,18,0.55)";
+  ctx.fillRect(x, y, 150, 30);
+  ctx.fillStyle = "#e8eef2";
+  ctx.font = "13px monospace";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText("Wind", x + 8, y + 15);
+  const len = Math.min(56, Math.abs(w) * 5);
+  if (len < 3) { ctx.fillText("calm", x + 70, y + 15); return; }
+  const d = w > 0 ? 1 : -1, cx = x + 104, tail = cx - d * len / 2, head = cx + d * len / 2;
+  ctx.strokeStyle = "#e8eef2";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(tail, y + 15); ctx.lineTo(head, y + 15); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(head, y + 15); ctx.lineTo(head - d * 8, y + 10); ctx.lineTo(head - d * 8, y + 20); ctx.closePath(); ctx.fill();
+  ctx.lineWidth = 1;
 }
 
 function drawHud(dtFrame) {
@@ -227,6 +252,7 @@ function drawHud(dtFrame) {
   if (textAge > 0.1) { rebuildText(); textAge = 0; }
 
   drawPanel(12, 12, hudLines);
+  drawWindArrow(12, 12 + panelHeight(hudLines) + 8);
   let rightY = 12;
   if (showDebug) {
     drawPanel(Wc - panelWidth(debugLines) - 12, rightY, debugLines);
@@ -240,5 +266,6 @@ function drawHud(dtFrame) {
   ctx.font = "12px monospace";
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
-  ctx.fillText("Space: launch  1-3: motor  4-6: delay 3/5/7 s  7-9: chute S/M/L  0: no chute  R: reset  G: graphs  E: export  D: debug  H: sharp", 12, Hc - 10);
+  ctx.fillText("Space: launch  1-3: motor  4-6: delay  7-9: chute S/M/L  0: no chute  R: reset", 12, Hc - 26);
+  ctx.fillText("W: wind speed  Q: wind direction  A: launch angle  G: graphs  E: export  D: debug  H: sharp", 12, Hc - 10);
 }

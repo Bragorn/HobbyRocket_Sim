@@ -8,9 +8,7 @@
    right), omega is how fast it is turning. Parts can fail (broken).
    ===================================================================== */
 
-/* What the player picked before launch (index into MOTORS, DELAYS, CHUTES, WINDS).
-   chute = -1 means no parachute. */
-const sel = { motor: 1, delay: 1, chute: 1, wind: 0 };
+const sel = { motor: 1, delay: 1, chute: 1, wind: 0, windDir: 1, angle: 2 };   // angle 2 = 0 degrees
 
 const sim = {
   t: 0,                          // flight time: seconds since ignition
@@ -28,7 +26,8 @@ const sim = {
   chuteDeployed: false, deployT: 0, chuteOpen: 0,   // chuteOpen goes 0 -> 1
   prevVy: 0, apogeeLogged: false,
   apogee: 0, maxSpeed: 0, maxAccel: 0, maxQ: 0, maxShock: 0,
-  impact: 0, verdict: ""
+  impact: 0, verdict: "", wind: 0, aoa: 0, chutePull: 0, seed: 0,
+  gustP1: 0, gustP2: 0, rodErr: 0,
 };
 
 const chutePart = rocket.parts.find(function (p) { return p.kind === "chute"; });
@@ -137,6 +136,21 @@ function airDensity(y) {
   return RHO0 * Math.exp(-Math.max(0, y) / SCALE_HEIGHT);
 }
 
+let rngState = 1;
+function rand() {                                 // small seeded random numbers (same seed = same flight)
+  rngState = (rngState + 0x6D2B79F5) | 0;
+  let t = Math.imul(rngState ^ (rngState >>> 15), 1 | rngState);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+function windNow() {                              // wind speed toward +x right now, with gusts
+  const base = WINDS[sel.wind] * sel.windDir;
+  if (!launchOpts.imperfect || base === 0) return base;
+  const g = (Math.sin(sim.t * 0.9 + sim.gustP1) + 0.6 * Math.sin(sim.t * 2.3 + sim.gustP2)) / 1.6;
+  return base * (1 + 0.3 * g);                    // gusts swing the speed by up to 30%
+}
+
 function landingVerdict(speed) {
   if (speed <= SAFE_LANDING_SPEED) return "SAFE";
   return speed <= CRASH_SPEED ? "HARD" : "CRASH";
@@ -154,6 +168,7 @@ function refreshLoadout() {                       // call whenever motor/chute c
   sim.mass = rocketMass();
   sim.cg = rocketCG();
   sim.cg0 = sim.cg;                               // the rocket is drawn turning about this point
+  if (!sim.ignited) sim.theta = ANGLES[sel.angle] * Math.PI / 180;   // the rod tilt shows on the pad
 }
 
 function step(dt) {
@@ -195,7 +210,9 @@ function step(dt) {
   const cdA = rocketCdA();                        // airframe only. The chute is handled below
 
   // the rocket's velocity relative to the air (the wind blows toward +x)
-  const rx = sim.vx - WINDS[sel.wind];
+  const wind = windNow();
+  sim.wind = wind;
+  const rx = sim.vx - wind;
   const ry = sim.vy;
   const V2 = rx * rx + ry * ry;
   const V = Math.sqrt(V2);
@@ -212,6 +229,7 @@ function step(dt) {
   // surfaces far from the CG resist turning (this is the damping).
   const sn = Math.sin(sim.theta), cs = Math.cos(sim.theta);
   const vn = rx * cs - ry * sn;                   // air speed across the rocket
+  sim.aoa = Math.atan2(Math.abs(vn), Math.abs(rx * sn + ry * cs));   // angle between the rocket's axis and the airflow, 0 to 90 deg
   const k = 0.5 * rho * A_REF * V;
   let sideF = 0, torque = 0;
   for (let i = 0; i < rocket.parts.length; i++) {
@@ -231,6 +249,7 @@ function step(dt) {
   // with the rocket's spin too). The pull goes through that point, so a pull
   // above the CG swings the rocket round to hang from it.
   let chuteFx = 0, chuteFy = 0;
+  sim.chutePull = 0;
   const chuteArea = chuteCdA() * sim.chuteOpen;
   if (chuteArea > 0) {
     const a = CHUTE_ATTACH_AT - cg;               // tie-on point, height above the CG
@@ -244,6 +263,7 @@ function step(dt) {
         breakPart(chutePart, "cord snapped");     // the canopy is gone
         sim.chuteOpen = 0;
       } else {
+        sim.chutePull = mag;
         chuteFx = -mag * (px / Vp);
         chuteFy = -mag * (py / Vp);
         sim.chuteUx = -px / Vp;
@@ -261,18 +281,24 @@ function step(dt) {
   if (sim.y <= 0 && net <= 0) {
     sim.y = 0; sim.vy = 0; sim.ay = 0;            // sitting on the pad
     sim.vx = 0; sim.omega = 0;
+  } else if (!sim.offRod) {
+    // on the launch rod: it can only slide along the rod's own tilt
+    const aAlong = (thrust - m * G * cs + dragX * sn + dragY * cs) / m;
+    const va = Math.max(0, sim.vx * sn + sim.vy * cs) + aAlong * dt;
+    sim.vx = va * sn;
+    sim.vy = va * cs;
+    sim.ay = aAlong * cs;
+    sim.y += sim.vy * dt;
+    sim.x += sim.vx * dt;
+    if (sim.y >= ROD_LENGTH) sim.offRod = true;   // free flight from the next step
   } else {
     sim.ay = net / m;
     sim.vy += sim.ay * dt;                        // velocity first...
     sim.y  += sim.vy * dt;                        // ...then position (semi-implicit Euler)
-    if (sim.offRod) {
-      sim.vx    += (netX / m) * dt;
-      sim.omega += (torque / rocketInertia(cg)) * dt;
-      sim.x     += sim.vx * dt;
-      sim.theta += sim.omega * dt;
-    } else if (sim.y >= ROD_LENGTH) {
-      sim.offRod = true;                          // the rod held it straight until now
-    }
+    sim.vx    += (netX / m) * dt;
+    sim.omega += (torque / rocketInertia(cg)) * dt;
+    sim.x     += sim.vx * dt;
+    sim.theta += sim.omega * dt;
     if (sim.y < 0) {                              // touchdown
       sim.impact = -sim.vy;
       sim.verdict = landingVerdict(sim.impact);
@@ -284,7 +310,7 @@ function step(dt) {
   }
 
   // 5) flight stats and events
-  const qx = sim.vx - WINDS[sel.wind];
+  const qx = sim.vx - wind;
   sim.q = 0.5 * airDensity(sim.y) * (qx * qx + sim.vy * sim.vy);
   if (sim.y > sim.apogee) sim.apogee = sim.y;
   if (Math.abs(sim.vy) > sim.maxSpeed) sim.maxSpeed = Math.abs(sim.vy);
@@ -308,6 +334,12 @@ function step(dt) {
 function launch() {
   if (sim.ignited) return;
   sim.ignited = true;
+  sim.seed = launchOpts.seed || ((Math.random() * 4294967296) >>> 0) || 1;
+  rngState = sim.seed;
+  sim.gustP1 = rand() * 6.2832;
+  sim.gustP2 = rand() * 6.2832;
+  sim.rodErr = (rand() * 2 - 1) * ROD_ERROR_DEG * Math.PI / 180;
+  if (launchOpts.imperfect) sim.theta += sim.rodErr;   // a slightly crooked rod
   teleEvent("Ignition");
 }
 
@@ -322,6 +354,8 @@ function resetSim() {
   sim.prevVy = 0; sim.apogeeLogged = false;
   sim.apogee = 0; sim.maxSpeed = 0; sim.maxAccel = 0; sim.maxQ = 0; sim.maxShock = 0;
   sim.impact = 0; sim.verdict = "";
+  sim.gustP1 = 0; sim.gustP2 = 0; sim.rodErr = 0;
+  sim.wind = 0; sim.aoa = 0; sim.chutePull = 0; sim.seed = 0;
   for (let i = 0; i < rocket.parts.length; i++) { rocket.parts[i].broken = false; rocket.parts[i].peak = 0; }
   refreshLoadout();
   teleReset();
