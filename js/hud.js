@@ -24,7 +24,7 @@ function rebuildText() {
     "State      " + state,
     "Wind       " + WINDS[sel.wind] + " m/s",
     "Tilt       " + (sim.theta * 180 / Math.PI).toFixed(1) + " deg",
-    "Stability  " + ((sim.cg - ROCKET_CP) / 0.025).toFixed(1) + " cal",
+    "Stability  " + (rocketCP() === null ? "no fins/nose" : ((sim.cg - rocketCP()) / 0.025).toFixed(1) + " cal"),
     "Altitude   " + sim.y.toFixed(1) + " m",
     "Speed      " + sim.vy.toFixed(1) + " m/s",
     "Accel      " + sim.ay.toFixed(1) + " m/s2",
@@ -39,6 +39,12 @@ function rebuildText() {
     "Max Q      " + (sim.maxQ / 1000).toFixed(2) + " kPa",
     "Chute peak " + (sim.maxShock / G).toFixed(1) + " g"
   ];
+
+  for (let i = 0; i < rocket.parts.length; i++) {
+    const p = rocket.parts[i], lim = p.maxSide || p.maxPull;
+    if (lim) hudLines.push((p.name + "          ").slice(0, 10) + " " + p.peak.toFixed(1) + " / " + lim + " N" + (p.broken ? "  BROKEN" : ""));
+  }
+
   if (state === "LANDED") {
     hudLines.push("Impact     " + sim.impact.toFixed(1) + " m/s");
     hudLines.push("Verdict    " + sim.verdict);

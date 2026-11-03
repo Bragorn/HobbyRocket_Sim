@@ -131,5 +131,14 @@ sel.wind = 2; fly(1, 1, 1);
 check(Math.cos(sim.theta) > 0.7, `under the chute the rocket hangs nose-up (tilt at landing ${(sim.theta * 180 / Math.PI).toFixed(0)} deg)`);
 sel.wind = 0;
 
+/* ---- 6. part failures ---- */
+console.log("\n6. Part failures");
+const broken = () => get("rocket.parts").filter(p => p.broken).map(p => p.name);
+sel.wind = 0;
+fly(2, 0, 1);
+check(broken().includes("Parachute") && sim.verdict !== "SAFE", `E motor, 3 s delay, M chute: the cord snaps (${broken().join(", ")}) and it lands ${sim.verdict}`);
+fly(1, 1, 1);
+check(broken().length === 0, "C motor, 5 s delay, M chute: nothing breaks");
+
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);

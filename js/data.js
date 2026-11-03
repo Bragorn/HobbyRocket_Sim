@@ -92,14 +92,20 @@ for (let i = 0; i < CHUTES.length; i++) {
    --------------------------------------------------------------------- */
 const rocket = {
   parts: [
-    { name: "Fins",      kind: "fins",  length: 0.06, width: 0.025, span: 0.060, mass: 0.008, cdA: 0.8e-4, cn: 6.0, cpAt: 0.01, color: "#c0392b" },
+    { name: "Fins",      kind: "fins",  length: 0.06, width: 0.025, span: 0.060, mass: 0.008, cdA: 0.8e-4, cn: 6.0, cpAt: 0.01, maxSide: 8, maxQ: 30000, color: "#c0392b" },
     { name: "Body tube", kind: "tube",  length: 0.30, width: 0.025,              mass: 0.030, cdA: 0.8e-4, color: "#ecf0f1" },
-    { name: "Nose cone", kind: "nose",  length: 0.08, width: 0.025,              mass: 0.010, cdA: 1.0e-4, cn: 2.0, cpAt: 0.40, color: "#e67e22" },
+    { name: "Nose cone", kind: "nose",  length: 0.08, width: 0.025,              mass: 0.010, cdA: 1.0e-4, cn: 2.0, cpAt: 0.40, maxSide: 6, color: "#e67e22" },
     { name: "Motor",     kind: "motor", length: 0.07, width: 0.018,              mass: 0,     cdA: 0,      at: 0.035, color: "#34495e", inside: true },
-    { name: "Parachute", kind: "chute", length: 0,    width: 0,                  mass: 0,     cdA: 0,      at: 0.30,  color: "#f5c542", inside: true }
+    { name: "Parachute", kind: "chute", length: 0,    width: 0,                  mass: 0,     cdA: 0,      at: 0.30,  maxPull: 22, color: "#f5c542", inside: true }
   ]
 };
 
+/* Strength limits (first guesses, tune from the peak loads shown in the HUD):
+   maxSide = sideways air force the part can take (N)
+   maxQ    = dynamic pressure where fins flutter apart (Pa)
+   maxPull = pull the parachute cord can take (N) */
+for (let i = 0; i < rocket.parts.length; i++) { rocket.parts[i].broken = false; rocket.parts[i].peak = 0; }
+  
 /* New part fields:
    at   = height of the part's own center above the bottom of the rocket (m).
           Worked out below for stacked parts; set by hand for inside parts.

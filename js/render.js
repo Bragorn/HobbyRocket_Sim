@@ -120,7 +120,7 @@ function drawFlame(cx, baseY, z) {
 }
 
 function drawChute() {                                    // drawn in world space, pointing where the pull goes
-  if (!sim.chuteDeployed || sel.chute < 0) return;
+  if (!sim.chuteDeployed || sel.chute < 0 || chutePart.broken) return;
   const c = CHUTES[sel.chute], z = cam.zoom, open = sim.chuteOpen;
   const a = CHUTE_ATTACH_AT - sim.cg0;
   const ax = sim.x + a * Math.sin(sim.theta);
@@ -168,6 +168,8 @@ function drawRocket() {
       }
       continue;
     }
+
+    if (p.broken) { up += p.length; continue; }   // this part is gone, but the others stay where they are
 
     const h = p.length * z;
     const bottom = baseY - up * z;

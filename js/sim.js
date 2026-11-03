@@ -4,8 +4,8 @@
    SIMULATION  (js/sim.js)
    Physics only. Nothing in this file knows about pixels or the screen.
    World: x = right, y = up in meters, the ground is y = 0.
-   The rocket can now tilt: theta is the lean from vertical (+ = leaning
-   right), omega is how fast it is turning.
+   The rocket can tilt: theta is the lean from vertical (+ = leaning
+   right), omega is how fast it is turning. Parts can fail (broken).
    ===================================================================== */
 
 /* What the player picked before launch (index into MOTORS, DELAYS, CHUTES, WINDS).
@@ -31,6 +31,14 @@ const sim = {
   impact: 0, verdict: ""
 };
 
+const chutePart = rocket.parts.find(function (p) { return p.kind === "chute"; });
+
+function breakPart(p, why) {                      // a part fails: it stops counting from the next step on
+  if (p.broken) return;
+  p.broken = true;
+  teleEvent(p.name + " " + why + "  " + sim.y.toFixed(0) + " m, " + Math.hypot(sim.vx, sim.vy).toFixed(0) + " m/s");
+}
+
 function curveValue(c, t) {                       // linear interpolation along the thrust curve
   if (t <= c[0][0]) return c[0][1];
   for (let i = 1; i < c.length; i++) {
@@ -49,9 +57,11 @@ function motorMass() {                            // dry case + the fuel that is
   return m.dryMass + m.propMass * (1 - used);
 }
 
-function chuteMass() { return sel.chute >= 0 ? CHUTES[sel.chute].mass : 0; }
+function chuteMass() { return sel.chute >= 0 && !chutePart.broken ? CHUTES[sel.chute].mass : 0; }
+function chuteCdA()  { return sel.chute >= 0 && !chutePart.broken ? CHUTES[sel.chute].cdA : 0; }
 
 function partMass(p) {
+  if (p.broken) return 0;
   if (p.kind === "motor") return motorMass();
   if (p.kind === "chute") return chuteMass();
   return p.mass;
@@ -61,6 +71,7 @@ function rocketMass() {
   let total = 0;
   for (let i = 0; i < rocket.parts.length; i++) {
     const p = rocket.parts[i];
+    if (p.broken) continue;
     if (p.kind === "motor") total += motorMass();
     else if (p.kind === "chute") total += chuteMass();
     else total += p.mass;
@@ -91,24 +102,26 @@ function rocketInertia(cg) {
 }
 
 /* Center of pressure: where the sideways air force acts. If it is BELOW
-   the CG the rocket is stable and swings back into the wind. */
+   the CG the rocket is stable and swings back into the wind.
+   Returns null when there is no nose or fins left. */
 function rocketCP() {
   let cn = 0, cnx = 0;
   for (let i = 0; i < rocket.parts.length; i++) {
     const p = rocket.parts[i];
-    if (p.cn) { cn += p.cn; cnx += p.cn * p.cpAt; }
+    if (p.cn && !p.broken) { cn += p.cn; cnx += p.cn * p.cpAt; }
   }
-  return cnx / cn;
+  return cn > 0 ? cnx / cn : null;
 }
 const ROCKET_CP = rocketCP();
 
 function rocketCdA() {                            // drag area of the airframe
   let total = 0;
-  for (let i = 0; i < rocket.parts.length; i++) total += rocket.parts[i].cdA;
+  for (let i = 0; i < rocket.parts.length; i++) {
+    if (rocket.parts[i].broken) continue;
+    total += rocket.parts[i].cdA;
+  }
   return total * DRAG_TUNE;
 }
-
-function chuteCdA() { return sel.chute >= 0 ? CHUTES[sel.chute].cdA : 0; }
 
 function rocketHeight() {
   let h = 0;
@@ -171,7 +184,7 @@ function step(dt) {
     sim.deployT = sim.t;
     teleEvent("Chute out  " + sim.y.toFixed(0) + " m, " + sim.vy.toFixed(0) + " m/s");
   }
-  if (sim.chuteDeployed) sim.chuteOpen = Math.min(1, (sim.t - sim.deployT) / CHUTE_OPEN_TIME);
+  if (sim.chuteDeployed && !chutePart.broken) sim.chuteOpen = Math.min(1, (sim.t - sim.deployT) / CHUTE_OPEN_TIME);
 
   // 3) forces (newtons, up and right are positive)
   const m = rocketMass();
@@ -186,6 +199,7 @@ function step(dt) {
   const ry = sim.vy;
   const V2 = rx * rx + ry * ry;
   const V = Math.sqrt(V2);
+  const qNow = 0.5 * rho * V2;                    // dynamic pressure right now
 
   // airframe drag: pushes against the motion through the air
   const dragMag = 0.5 * rho * V2 * cdA;
@@ -193,18 +207,24 @@ function step(dt) {
   const dragX = V > 0 ? -dragMag * (rx / V) : 0;
   const dragY = V > 0 ? -dragMag * (ry / V) : 0;
 
-  // sideways air force on the nose and fins (same as before)
+  // sideways air force on the nose and fins. The rocket points along
+  // b = (sin, cos); "across" is n = (cos, -sin). The spin term makes
+  // surfaces far from the CG resist turning (this is the damping).
   const sn = Math.sin(sim.theta), cs = Math.cos(sim.theta);
-  const vn = rx * cs - ry * sn;
+  const vn = rx * cs - ry * sn;                   // air speed across the rocket
   const k = 0.5 * rho * A_REF * V;
   let sideF = 0, torque = 0;
   for (let i = 0; i < rocket.parts.length; i++) {
     const p = rocket.parts[i];
-    if (!p.cn) continue;
+    if (!p.cn || p.broken) continue;
     const r = p.cpAt - cg;
     const f = -k * p.cn * (vn + sim.omega * r);
     sideF += f;
     torque += f * r;
+    const load = Math.abs(f);                     // how hard the air pushes this part sideways
+    if (load > p.peak) p.peak = load;
+    if (p.maxSide && load > p.maxSide) breakPart(p, "snapped off");
+    if (p.maxQ && qNow > p.maxQ) breakPart(p, "fluttered apart");
   }
 
   // parachute: drag from the air moving past the tie-on point (which moves
@@ -219,12 +239,18 @@ function step(dt) {
     const Vp = Math.sqrt(px * px + py * py);
     if (Vp > 0) {
       const mag = 0.5 * rho * Vp * Vp * chuteArea;
-      chuteFx = -mag * (px / Vp);
-      chuteFy = -mag * (py / Vp);
-      sim.chuteUx = -px / Vp;
-      sim.chuteUy = -py / Vp;
-      sim.drag += mag;
-      torque += a * (chuteFx * cs - chuteFy * sn);
+      if (mag > chutePart.peak) chutePart.peak = mag;
+      if (mag > chutePart.maxPull) {
+        breakPart(chutePart, "cord snapped");     // the canopy is gone
+        sim.chuteOpen = 0;
+      } else {
+        chuteFx = -mag * (px / Vp);
+        chuteFy = -mag * (py / Vp);
+        sim.chuteUx = -px / Vp;
+        sim.chuteUy = -py / Vp;
+        sim.drag += mag;
+        torque += a * (chuteFx * cs - chuteFy * sn);
+      }
     }
   }
 
@@ -288,6 +314,7 @@ function launch() {
 function resetSim() {
   sim.t = 0; sim.y = 0; sim.vy = 0; sim.ay = 0;
   sim.x = 0; sim.vx = 0; sim.theta = 0; sim.omega = 0; sim.offRod = false;
+  sim.chuteUx = 0; sim.chuteUy = 1;
   sim.thrust = 0; sim.drag = 0; sim.q = 0;
   sim.ignited = false; sim.burnedOut = false;
   sim.motorT = 0; sim.impulse = 0;
@@ -295,6 +322,7 @@ function resetSim() {
   sim.prevVy = 0; sim.apogeeLogged = false;
   sim.apogee = 0; sim.maxSpeed = 0; sim.maxAccel = 0; sim.maxQ = 0; sim.maxShock = 0;
   sim.impact = 0; sim.verdict = "";
+  for (let i = 0; i < rocket.parts.length; i++) { rocket.parts[i].broken = false; rocket.parts[i].peak = 0; }
   refreshLoadout();
   teleReset();
 }
