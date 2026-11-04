@@ -43,11 +43,11 @@ const TELE_CAP = TELE_RATE * 300;// room for 5 minutes of flight
    in later. Fuel mass burns off in proportion to the impulse delivered.
    --------------------------------------------------------------------- */
 const MOTORS = [
-  { name: "A", dryMass: 0.0127, propMass: 0.0033,
+  { name: "A", length: 0.045, diameter: 0.018, color: "#e0b030", dryMass: 0.0127, propMass: 0.0033,
     curve: [[0, 0], [0.02, 10], [0.08, 9], [0.20, 6], [0.32, 5], [0.40, 0]] },
-  { name: "C", dryMass: 0.0120, propMass: 0.0120,
+  { name: "C", length: 0.070, diameter: 0.018, color: "#9aa5b1", dryMass: 0.0120, propMass: 0.0120,
     curve: [[0, 0], [0.05, 13], [0.15, 12], [0.40, 7], [1.00, 5.5], [1.50, 5], [1.65, 0]] },
-  { name: "E", dryMass: 0.0320, propMass: 0.0250,
+  { name: "E", length: 0.095, diameter: 0.024, color: "#8e44ad", dryMass: 0.0320, propMass: 0.0250,
     curve: [[0, 0], [0.10, 22], [0.30, 16], [0.60, 11], [2.50, 8], [3.00, 6], [3.20, 0]] }
 ];
 

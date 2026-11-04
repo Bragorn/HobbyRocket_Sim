@@ -31,6 +31,7 @@ const sim = {
 };
 
 const chutePart = rocket.parts.find(function (p) { return p.kind === "chute"; });
+const motorPart = rocket.parts.find(function (p) { return p.kind === "motor"; });
 
 function breakPart(p, why) {                      // a part fails: it stops counting from the next step on
   if (p.broken) return;
@@ -165,6 +166,10 @@ function flightState() {
 }
 
 function refreshLoadout() {                       // call whenever motor/chute choice changes
+  const mo = MOTORS[sel.motor];                   // the motor part takes the size of the chosen motor
+  motorPart.length = mo.length;
+  motorPart.width = mo.diameter;
+  motorPart.at = mo.length / 2;                   // sits flush with the bottom of the rocket
   sim.mass = rocketMass();
   sim.cg = rocketCG();
   sim.cg0 = sim.cg;                               // the rocket is drawn turning about this point

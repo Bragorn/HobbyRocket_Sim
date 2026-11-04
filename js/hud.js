@@ -18,7 +18,7 @@ function rebuildText() {
   const state = flightState();
 
   hudLines = [
-    "Motor      " + motor.name + "  " + motor.totalImpulse.toFixed(1) + " N*s",
+    "Motor      " + motor.name + "  " + motor.totalImpulse.toFixed(1) + " N*s  " + (motor.diameter * 1000).toFixed(0) + "x" + (motor.length * 1000).toFixed(0) + " mm",
     "Delay      " + (chute ? DELAYS[sel.delay] + " s  (T+" + (motor.burnTime + DELAYS[sel.delay]).toFixed(1) + ")" : "-"),
     "Chute      " + (chute ? chute.name + "  " + (chute.diameter * 100).toFixed(0) + " cm" + (sim.chuteDeployed ? "  OPEN" : "") : "none"),
     "State      " + state,

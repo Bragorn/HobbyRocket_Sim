@@ -231,5 +231,17 @@ for (let i = 0; i < 100; i++) key("Minus");
 check(get("cam.target") * get("ROCKET_H") >= get("CAM_MIN_PX") - 1e-6, "zoom stops at the widest limit");
 sandbox.resetAll();
 
+/* ---- 11. motor sizes ---- */
+console.log("\n11. Motor sizes");
+for (let mi = 0; mi < MOTORS.length; mi++) {
+  sel.motor = mi; sandbox.resetAll();
+  const mp = partNamed("Motor");
+  check(mp.length === MOTORS[mi].length && mp.width === MOTORS[mi].diameter, `motor ${MOTORS[mi].name} part is ${(MOTORS[mi].diameter * 1000).toFixed(0)}x${(MOTORS[mi].length * 1000).toFixed(0)} mm`);
+  check(MOTORS[mi].length <= 0.30 && MOTORS[mi].diameter <= 0.025, `motor ${MOTORS[mi].name} fits inside the body tube`);
+  const cal = (sim.cg - get("rocketCP()")) / 0.025;
+  check(cal > 0, `motor ${MOTORS[mi].name}: rocket is stable on the pad (${cal.toFixed(1)} cal)`);
+}
+sel.motor = 1; sandbox.resetAll();
+
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);
