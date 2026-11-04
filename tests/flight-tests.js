@@ -10,7 +10,7 @@
    ===================================================================== */
 const fs = require("fs"), path = require("path"), vm = require("vm");
 const root = path.join(__dirname, "..");
-const FILES = ["data", "telemetry", "sim", "camera", "render", "hud", "input", "main"];
+const FILES = ["data", "catalog", "telemetry", "sim", "camera", "render", "hud", "input", "main"];
 
 /* ---- a fake browser, just enough for the game files to load ---- */
 const drawCalls = {};
@@ -242,6 +242,32 @@ for (let mi = 0; mi < MOTORS.length; mi++) {
   check(cal > 0, `motor ${MOTORS[mi].name}: rocket is stable on the pad (${cal.toFixed(1)} cal)`);
 }
 sel.motor = 1; sandbox.resetAll();
+
+/* ---- 12. parts catalog ---- */
+console.log("\n12. Parts catalog");
+sel.motor = 1; sandbox.resetAll();
+const built = get("buildParts(DEFAULT_BUILD)"), liveParts = get("rocket.parts");
+const cmpFields = ["name", "kind", "length", "width", "mass", "cdA", "cn", "cpAt", "maxSide", "maxQ", "maxPull", "at", "inside"];
+const diffs = [];
+liveParts.forEach((a, i) => cmpFields.forEach(f => {
+  const x = a[f], y = built[i][f];
+  if (typeof x === "number" && typeof y === "number" ? Math.abs(x - y) > 1e-9 : x !== y) diffs.push(`${a.name}.${f}: live ${x}, catalog ${y}`);
+}));
+check(diffs.length === 0, diffs.length === 0 ? "default catalog build matches today's rocket exactly" : "default build differs: " + diffs.join("; "));
+const tubeById = (id) => get("TUBES").find(t => t.id === id);
+check(get("motorFit")(tubeById("t24-thin"), MOTORS[2]) === "ok", "E motor fits a 24 mm tube");
+check(get("motorFit")(tubeById("t18-thin"), MOTORS[2]) === "no", "E motor does not fit an 18 mm tube");
+check(get("motorFit")(tubeById("t24-thin"), MOTORS[0]) === "adapter", "A motor in a 24 mm tube needs an adapter");
+check(get("motorFit")(tubeById("t18-thin"), MOTORS[1]) === "ok", "C motor fits an 18 mm tube");
+const allLists = ["TUBES", "FIN_SHAPES", "FIN_MATERIALS", "NOSES", "RECOVERY"];
+check(allLists.every(n => { const ids = get(n).map(x => x.id); return new Set(ids).size === ids.length; }), "every catalog id is unique");
+let combos = 0, badNum = 0;
+for (const t of get("TUBES")) for (const f of get("FIN_SHAPES")) for (const m of get("FIN_MATERIALS")) for (const n of get("NOSES")) {
+  combos++;
+  for (const p of get("buildParts")({ tube: t.id, fins: f.id, finMat: m.id, nose: n.id, recovery: "M" }))
+    for (const k of ["length", "width", "mass", "cdA", "at"]) if (!Number.isFinite(p[k]) || p[k] < 0) badNum++;
+}
+check(badNum === 0, `${combos} tube x fin x material x nose combinations all build with sensible numbers`);
 
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);
