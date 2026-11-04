@@ -27,7 +27,7 @@ function rebuildText() {
     "Seed       " + (sim.ignited ? sim.seed : "-"),
     "Time warp  " + warp + "x",
     "Tilt       " + (sim.theta * 180 / Math.PI).toFixed(1) + " deg",
-    "Stability  " + (rocketCP() === null ? "no fins/nose" : ((sim.cg - rocketCP()) / 0.025).toFixed(1) + " cal"),
+    "Stability  " + (rocketCal() === null ? "no fins/nose" : rocketCal().toFixed(1) + " cal"),
     "Altitude   " + sim.y.toFixed(1) + " m",
     "Speed      " + sim.vy.toFixed(1) + " m/s",
     "Accel      " + sim.ay.toFixed(1) + " m/s2",
@@ -267,6 +267,6 @@ function drawHud(dtFrame) {
   ctx.font = "12px monospace";
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
-  ctx.fillText("Space: launch  1-3: motor  4-6: delay  7-9: chute S/M/L  0: no chute  R: reset Z / + / - / wheel: zoom", 12, Hc - 26);
+  ctx.fillText("Space: launch  R: reset  Z / + / - / wheel: zoom   (rocket parts: sidebar)", 12, Hc - 26);
   ctx.fillText("W: wind speed  Q: wind direction  A: launch angle  G: graphs  E: export  D: debug  H: sharp  T: time warp", 12, Hc - 10);
 }

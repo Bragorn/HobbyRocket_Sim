@@ -5,6 +5,7 @@
    Canvas setup and drawing the world: sky, ground, pad, rocket, chute.
    We draw in CSS pixels (Wc x Hc). By default the canvas has exactly that
    many real pixels ("fast"). Press H for "sharp" (full retina resolution).
+   The builder sidebar (ui.js) sits on the right, so the canvas is that much narrower.
    ===================================================================== */
 
 const canvas = document.getElementById("game");
@@ -15,7 +16,8 @@ let showDebug = true;
 let graphPage = 0;         // 0 and 1 = graph pages, -1 = graphs off
 
 function resize() {
-  Wc = window.innerWidth;
+  const side = typeof uiWidth === "function" ? uiWidth() : 0;   // width taken by the sidebar
+  Wc = Math.max(200, window.innerWidth - side);
   Hc = window.innerHeight;
   const k = sharp ? (window.devicePixelRatio || 1) : 1;
   canvas.width = Math.floor(Wc * k);
@@ -122,7 +124,7 @@ function drawFlame(cx, baseY, z) {
 function drawChute() {                                    // drawn in world space, pointing where the pull goes
   if (!sim.chuteDeployed || sel.chute < 0 || chutePart.broken) return;
   const c = CHUTES[sel.chute], z = cam.zoom, open = sim.chuteOpen;
-  const a = CHUTE_ATTACH_AT - sim.cg0;
+  const a = chuteAttachAt() - sim.cg0;
   const ax = sim.x + a * Math.sin(sim.theta);
   const ay = sim.y + sim.cg0 + a * Math.cos(sim.theta);   // tie-on point in meters
   const lineLen = CHUTE_LINE * (0.4 + 0.6 * open);
@@ -145,14 +147,6 @@ function drawChute() {                                    // drawn in world spac
   ctx.fill();
   ctx.restore();
 }
-
-if (cam.zoom * ROCKET_H < 8) {                          // too small to see: draw a dot
-  ctx.fillStyle = "#e74c3c";
-  ctx.beginPath();
-  ctx.arc(sx(sim.x), sy(sim.y + sim.cg0), 4, 0, 6.2832);
-  ctx.fill();
-}
-
 
 function drawRocket() {
   const z = cam.zoom;
@@ -183,7 +177,7 @@ function drawRocket() {
       } else if (p.kind === "chute" && sel.chute >= 0 && !sim.chuteDeployed) {
         const c = CHUTES[sel.chute], bh = Math.max(2, c.diameter * 0.1 * z);
         ctx.fillStyle = c.color;
-        ctx.fillRect(cx - 0.0125 * z, baseY - p.at * z - bh / 2, 0.025 * z, bh);      // packed chute
+        ctx.fillRect(cx - bodyDiameter() * z / 2, baseY - p.at * z - bh / 2, bodyDiameter() * z, bh);   // packed chute, as wide as the tube
       }
       continue;
     }
@@ -219,6 +213,13 @@ function drawRocket() {
     up += p.length;
   }
   ctx.restore();
+
+  if (z * ROCKET_H < 8) {                                 // too small to see: draw a dot
+    ctx.fillStyle = "#e74c3c";
+    ctx.beginPath();
+    ctx.arc(sx(sim.x), sy(sim.y + sim.cg0), 4, 0, 6.2832);
+    ctx.fill();
+  }
 }
 
 /* One full frame. The text and graphs live in hud.js. */

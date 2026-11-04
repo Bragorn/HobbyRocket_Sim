@@ -17,6 +17,17 @@ function resetAll() {
   resetCamera();
 }
 
+/* Call after the build, the motor or the chute choice changes (catalog.js does).
+   Rebuilds the rocket and keeps it the same size on screen, even if its height changed. */
+function applyLoadout() {
+  if (sim.ignited) return;
+  const px = cam.target * ROCKET_H;
+  applyBuild();
+  setZoomPx(px);
+  cam.zoom = cam.target;
+  refreshLoadout();
+}
+
 function frame(now) {
   const rawMs = Math.max(0, now - last);
   last = now;
@@ -37,6 +48,7 @@ function frame(now) {
 
   updateCamera();
   render(dtFrame);
+  if (typeof uiRefresh === "function") uiRefresh();     // the sidebar (not loaded in the tests)
   const t2 = performance.now();
 
   simMs += ((t1 - t0) - simMs) * 0.05;
@@ -47,5 +59,6 @@ function frame(now) {
 }
 
 resize();
+applyBuild();                                           // the rocket starts as the default build
 resetAll();
 requestAnimationFrame(frame);

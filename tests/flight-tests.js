@@ -7,6 +7,8 @@
       you exported earlier, number for number (the first 8 CSV columns).
    2. A table of every motor x delay x parachute combination.
    3. A smoke test: runs the real frame loop and keyboard handlers.
+   13. The builder: choosing parts rebuilds the rocket (js/ui.js, the
+      sidebar itself, is not loaded here: it needs a real web page).
    ===================================================================== */
 const fs = require("fs"), path = require("path"), vm = require("vm");
 const root = path.join(__dirname, "..");
@@ -114,15 +116,16 @@ console.log("\n4. Smoke test: frame loop, keys, graphs, reset");
 let now = 0;
 const frames = (n) => { for (let i = 0; i < n; i++) { now += 16.7; rafCallback(now); } };
 try {
-  key("KeyR"); key("Digit3"); key("Digit5"); key("Digit8");
-  check(sel.motor === 2 && sel.delay === 1 && sel.chute === 1, `keys 3, 5, 8 chose motor ${MOTORS[sel.motor].name}, ${DELAYS[sel.delay]} s delay, chute ${CHUTES[sel.chute].name}`);
-  key("Digit0"); check(sel.chute === -1, "key 0 removes the parachute");
-  key("Digit8"); key("Digit4"); key("Digit1");
+  key("KeyR");
+  sandbox.chooseMotor(2); sandbox.chooseDelay(1); sandbox.chooseRecovery("M");
+  check(sel.motor === 2 && sel.delay === 1 && sel.chute === 1, `chose motor ${MOTORS[sel.motor].name}, ${DELAYS[sel.delay]} s delay, chute ${CHUTES[sel.chute].name}`);
+  sandbox.chooseRecovery("none"); check(sel.chute === -1, "choosing no recovery removes the parachute");
+  sandbox.chooseRecovery("M"); sandbox.chooseDelay(0); sandbox.chooseMotor(0);
   frames(5);                                                    // empty graphs must draw
   key("Space"); frames(60 * 40);
   check(sandbox.flightState() === "LANDED", `real frame loop flew to ${sandbox.flightState()} (apogee ${sim.apogee.toFixed(0)} m)`);
-  key("Digit3");                                                // must be ignored after launch
-  check(sel.motor === 0, "motor keys are ignored after launch");
+  sandbox.chooseMotor(2);                                       // must be ignored after launch
+  check(sel.motor === 0, "the choosers are ignored after launch");
   key("KeyG"); frames(3); key("KeyG"); frames(3); key("KeyG"); frames(3);
   key("KeyD"); key("KeyH"); frames(3);
   key("KeyR"); frames(3);
@@ -268,6 +271,63 @@ for (const t of get("TUBES")) for (const f of get("FIN_SHAPES")) for (const m of
     for (const k of ["length", "width", "mass", "cdA", "at"]) if (!Number.isFinite(p[k]) || p[k] < 0) badNum++;
 }
 check(badNum === 0, `${combos} tube x fin x material x nose combinations all build with sensible numbers`);
+
+/* ---- 13. the builder: choosing parts rebuilds the rocket ---- */
+console.log("\n13. Builder: choosing parts rebuilds the rocket");
+const DEFAULT = get("DEFAULT_BUILD"), buildNow = get("build");
+const backToDefault = () => { for (const f of ["tube", "fins", "finMat", "nose"]) sandbox.chooseBuild(f, DEFAULT[f]); sandbox.chooseRecovery("M"); };
+sel.wind = 0; sel.angle = 2; sandbox.chooseMotor(1); sandbox.chooseDelay(1);
+backToDefault(); sandbox.resetAll();
+const baseFlight = fly(1, 1, 1);
+check(Math.abs(get("ROCKET_H") - 0.44) < 1e-9 && get("REF_AREA") === get("A_REF"), "default build: 44 cm tall, reference area unchanged");
+sandbox.resetAll();                               // the choosers only work on the pad, never after ignition
+
+sandbox.chooseBuild("tube", "t18-thin"); sandbox.chooseBuild("fins", "swept"); sandbox.chooseBuild("nose", "ogive");
+check(partNamed("Body tube").width === 0.019 && partNamed("Fins").span === 0.050 && partNamed("Nose cone").length === 0.090, "choosing tube, fins and nose swaps the real parts");
+check(Math.abs(get("ROCKET_H") - (0.07 + 0.30 + 0.09)) < 1e-9 && get("ROCKET_H") === get("rocketHeight()"), `rocket height follows the build (${(get("ROCKET_H") * 100).toFixed(0)} cm)`);
+check(get("REF_AREA") < get("A_REF"), "a thinner tube has a smaller reference area");
+check(Math.abs(get("chuteAttachAt()") - 0.37) < 1e-9, "the shock cord ties on at fin length + tube length (swept fins: 37 cm)");
+check(Math.abs(get("cam.target") * get("ROCKET_H") - get("CAM_ROCKET_PX")) < 1e-6, "the camera keeps the rocket the same size on screen");
+const changed = fly(1, 1, 1);
+check(changed.apogee !== baseFlight.apogee && Number.isFinite(changed.apogee) && sandbox.flightState() === "LANDED", `a different build flies differently (apogee ${baseFlight.apogee.toFixed(0)} m -> ${changed.apogee.toFixed(0)} m)`);
+
+sandbox.resetAll(); backToDefault(); sandbox.resetAll();
+const again = fly(1, 1, 1);
+check(again.apogee === baseFlight.apogee && again.impact === baseFlight.impact && again.flight === baseFlight.flight, "going back to the default build gives the identical flight");
+
+sandbox.resetAll(); sel.motor = 2; sandbox.chooseBuild("tube", "t18-thin");
+check(get("launchBlocked()") !== "", `E motor in an 18 mm tube cannot launch ("${get("launchBlocked()")}")`);
+sandbox.resetAll(); key("Space");
+check(sim.ignited === false, "Space does nothing while the motor does not fit");
+sandbox.chooseMotor(1);
+check(get("launchBlocked()") === "", "a motor that fits can launch");
+backToDefault(); sandbox.chooseMotor(1);
+
+sandbox.chooseRecovery("streamer");
+check(sel.chute === 3 && partNamed("Parachute").maxPull === 14 && buildNow.recovery === "streamer", "streamer: its own chute entry and a weaker 14 N cord");
+const str = fly(1, 1, 3);
+check(str.impact > get("SAFE_LANDING_SPEED") && str.impact < get("CRASH_SPEED") && broken().length === 0, `streamer on a C motor lands hard but intact (${str.impact.toFixed(1)} m/s, ${str.verdict})`);
+sandbox.resetAll(); backToDefault(); sandbox.chooseMotor(1);
+check(partNamed("Parachute").maxPull === 22, "back to a chute: 22 N cord");
+
+sandbox.chooseRecovery("none"); check(sel.chute === -1, "recovery none = no parachute");
+backToDefault(); sandbox.chooseMotor(1);
+const predicted = get("landingSpeed(1)"), actual = fly(1, 1, 1).impact;
+check(Math.abs(predicted - actual) < 0.6, `sidebar landing-speed estimate for the M chute (${predicted.toFixed(1)} m/s) matches the flight (${actual.toFixed(1)} m/s)`);
+
+sandbox.resetAll(); sandbox.launch();
+sandbox.chooseBuild("nose", "blunt"); sandbox.chooseRecovery("L"); sandbox.chooseMotor(2);
+check(buildNow.nose === "conical" && sel.chute === 1 && sel.motor === 1, "choices are locked after ignition");
+sandbox.resetAll();
+
+const unstable = [];
+for (const t of get("TUBES")) for (const f of get("FIN_SHAPES")) for (const n of get("NOSES")) {
+  sandbox.chooseBuild("tube", t.id); sandbox.chooseBuild("fins", f.id); sandbox.chooseBuild("nose", n.id);
+  const cal = get("rocketCal()");
+  if (cal < 1) unstable.push(`${t.id}/${f.id}/${n.id} ${cal.toFixed(1)}`);
+}
+console.log(`  info    builds under 1 caliber with the C motor: ${unstable.length} of ${get("TUBES").length * get("FIN_SHAPES").length * get("NOSES").length}${unstable.length ? "  e.g. " + unstable.slice(0, 4).join(", ") : ""}`);
+backToDefault(); sandbox.chooseMotor(1); sel.wind = 0; sandbox.resetAll();
 
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);

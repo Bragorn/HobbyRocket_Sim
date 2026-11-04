@@ -30,8 +30,14 @@ const sim = {
   gustP1: 0, gustP2: 0, rodErr: 0,
 };
 
-const chutePart = rocket.parts.find(function (p) { return p.kind === "chute"; });
-const motorPart = rocket.parts.find(function (p) { return p.kind === "motor"; });
+/* The motor and chute parts are looked up by kind. applyBuild() swaps the whole
+   part list, so it calls bindParts() again to find the new ones. */
+let chutePart = null, motorPart = null;
+function bindParts() {
+  chutePart = rocket.parts.find(function (p) { return p.kind === "chute"; });
+  motorPart = rocket.parts.find(function (p) { return p.kind === "motor"; });
+}
+bindParts();
 
 function breakPart(p, why) {                      // a part fails: it stops counting from the next step on
   if (p.broken) return;
@@ -112,7 +118,18 @@ function rocketCP() {
   }
   return cn > 0 ? cnx / cn : null;
 }
-const ROCKET_CP = rocketCP();
+
+function bodyDiameter() {                         // width of the body tube, m
+  for (let i = 0; i < rocket.parts.length; i++) if (rocket.parts[i].kind === "tube") return rocket.parts[i].width;
+  return 0.025;
+}
+
+/* Stability in calibers: how far the CG sits ahead of the CP, in body widths.
+   Below 0 is unstable, about 1 to 2 is the usual goal. null = no nose or fins. */
+function rocketCal() {
+  const cp = rocketCP();
+  return cp === null ? null : (sim.cg - cp) / bodyDiameter();
+}
 
 function rocketCdA() {                            // drag area of the airframe
   let total = 0;
@@ -131,7 +148,21 @@ function rocketHeight() {
   return h;
 }
 
-const ROCKET_H = rocketHeight();
+let ROCKET_H = rocketHeight();                    // changes when the build changes
+let REF_AREA = A_REF;                             // body cross-section area, m^2 (set from the tube by applyBuild)
+
+function chuteAttachAt() {                        // height above the bottom where the shock cord ties on, m
+  return chutePart.attach !== undefined ? chutePart.attach : CHUTE_ATTACH_AT;
+}
+
+/* Rough speed under a fully open chute (the choice at index idx of CHUTES), for the
+   rocket as it sits on the pad with the fuel gone. Handy for the sidebar. null = no chute. */
+function landingSpeed(idx) {
+  if (idx < 0) return null;
+  const c = CHUTES[idx];
+  const m = rocketMass() - MOTORS[sel.motor].propMass - chuteMass() + c.mass;
+  return Math.sqrt(2 * m * G / (RHO0 * c.cdA));
+}
 
 function airDensity(y) {
   return RHO0 * Math.exp(-Math.max(0, y) / SCALE_HEIGHT);
@@ -165,11 +196,26 @@ function flightState() {
   return sim.chuteDeployed ? "CHUTE" : "FALL";
 }
 
+/* Put the chosen build into the sim: swap the part list, find the motor and
+   chute parts again, and work out the numbers that depend on the tube and the
+   height. Only for the pad. main.js applyLoadout() calls this, then refreshLoadout(). */
+function applyBuild() {
+  build.recovery = recoveryForChute(sel.chute).id;      // sel.chute is the one that counts
+  const parts = buildParts(build);
+  rocket.parts.length = 0;
+  for (let i = 0; i < parts.length; i++) rocket.parts.push(parts[i]);
+  bindParts();
+  ROCKET_H = rocketHeight();
+  const r = bodyDiameter() / 2;
+  REF_AREA = Math.PI * r * r;
+}
+
 function refreshLoadout() {                       // call whenever motor/chute choice changes
   const mo = MOTORS[sel.motor];                   // the motor part takes the size of the chosen motor
   motorPart.length = mo.length;
   motorPart.width = mo.diameter;
   motorPart.at = mo.length / 2;                   // sits flush with the bottom of the rocket
+  chutePart.maxPull = recoveryForChute(sel.chute).cordN;   // a streamer's cord is weaker than a chute's
   sim.mass = rocketMass();
   sim.cg = rocketCG();
   sim.cg0 = sim.cg;                               // the rocket is drawn turning about this point
@@ -235,7 +281,7 @@ function step(dt) {
   const sn = Math.sin(sim.theta), cs = Math.cos(sim.theta);
   const vn = rx * cs - ry * sn;                   // air speed across the rocket
   sim.aoa = Math.atan2(Math.abs(vn), Math.abs(rx * sn + ry * cs));   // angle between the rocket's axis and the airflow, 0 to 90 deg
-  const k = 0.5 * rho * A_REF * V;
+  const k = 0.5 * rho * REF_AREA * V;
   let sideF = 0, torque = 0;
   for (let i = 0; i < rocket.parts.length; i++) {
     const p = rocket.parts[i];
@@ -257,7 +303,7 @@ function step(dt) {
   sim.chutePull = 0;
   const chuteArea = chuteCdA() * sim.chuteOpen;
   if (chuteArea > 0) {
-    const a = CHUTE_ATTACH_AT - cg;               // tie-on point, height above the CG
+    const a = chuteAttachAt() - cg;               // tie-on point, height above the CG
     const px = rx + sim.omega * a * cs;
     const py = ry - sim.omega * a * sn;
     const Vp = Math.sqrt(px * px + py * py);

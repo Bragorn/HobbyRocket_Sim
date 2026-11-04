@@ -14,7 +14,8 @@ const RHO0 = 1.225;          // air density at sea level, kg/m^3
 const SCALE_HEIGHT = 8500;   // air thins by a factor of e every 8500 m
 const DRAG_TUNE = 1.0;       // multiplies airframe drag. Try 1.5 or 2 for a snappier slowdown.
 const ROD_LENGTH = 1.0;                  // launch rod height, m. The rocket can't tilt until it clears this
-const A_REF = Math.PI * 0.0125 * 0.0125; // body cross-section area, m^2 (25 mm tube)
+const A_REF = Math.PI * 0.0125 * 0.0125; // body cross-section area of the default 25 mm tube, m^2. sim.js
+                                         // swaps in the real tube's area whenever the build changes
 const WINDS = [0, 2, 5, 8, 12, 20];      // wind speeds, m/s. W cycles them (20 is a storm, for stress tests)
 
 /* ---- launch setup ---- */
@@ -28,7 +29,8 @@ const CRASH_SPEED = 15;          // above this: CRASH. In between: HARD
 
 /* ---- parachute ---- */
 const CHUTE_OPEN_TIME = 0.4;     // seconds from deployment to fully open
-const CHUTE_ATTACH_AT = 0.36;   // where the shock cord ties on, m above the bottom (base of the nose cone)
+const CHUTE_ATTACH_AT = 0.36;   // where the shock cord ties on, m above the bottom (base of the nose cone). Default rocket only:
+                                // a built rocket ties on at fin length + tube length (see catalog.js)
 const CHUTE_LINE = 0.35;        // drawn length of the lines, m (looks only, no physics)
 
 /* ---- telemetry ---- */
@@ -73,14 +75,19 @@ const DELAY_COLORS = ["#3498db", "#2ecc71", "#e74c3c"];   // 3 s blue, 5 s green
 /* ---------------------------------------------------------------------
    PARACHUTES (first guesses, to be tested and then locked in)
    diameter in m, cd = drag coefficient of the canopy, mass in kg.
-   The drag area (cdA) is worked out from the diameter.
+   The drag area (cdA) is worked out from the diameter, unless an entry
+   gives its own cdA (the streamer does: diameter is only how big it is drawn).
+   The index here is what sel.chute holds. catalog.js RECOVERY says which
+   sidebar choice uses which entry, plus the price and cord strength.
    --------------------------------------------------------------------- */
 const CHUTES = [
-  { name: "S", diameter: 0.20, cd: 0.75, mass: 0.004, color: "#f5c542" },
-  { name: "M", diameter: 0.30, cd: 0.75, mass: 0.006, color: "#f5c542" },
-  { name: "L", diameter: 0.45, cd: 0.75, mass: 0.010, color: "#f5c542" }
+  { name: "S",   diameter: 0.20, cd: 0.75, mass: 0.004, color: "#f5c542" },
+  { name: "M",   diameter: 0.30, cd: 0.75, mass: 0.006, color: "#f5c542" },
+  { name: "L",   diameter: 0.45, cd: 0.75, mass: 0.010, color: "#f5c542" },
+  { name: "Str", diameter: 0.08, cd: 0.75, mass: 0.002, color: "#e8734a", cdA: 0.008 }
 ];
 for (let i = 0; i < CHUTES.length; i++) {
+  if (CHUTES[i].cdA !== undefined) continue;
   const r = CHUTES[i].diameter / 2;
   CHUTES[i].cdA = CHUTES[i].cd * Math.PI * r * r; // m^2
 }
@@ -94,6 +101,8 @@ for (let i = 0; i < CHUTES.length; i++) {
    inside:true parts sit inside the stack and add no height.
    The motor and parachute masses depend on what you picked, so their
    mass here is 0 and sim.js fills it in.
+   This is the starting rocket. As soon as the game starts, applyBuild()
+   (sim.js) replaces it with the parts of the build chosen in the sidebar.
    --------------------------------------------------------------------- */
 const rocket = {
   parts: [

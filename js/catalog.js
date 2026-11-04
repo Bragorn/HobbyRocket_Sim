@@ -1,19 +1,22 @@
 "use strict";
 
 /* =====================================================================
-   PARTS CATALOG  (js/catalog.js)
-   Everything you can pick for a rocket, as plain data. Nothing in the game
-   picks from it yet. buildParts() turns a choice into the same kind of
-   part list as rocket.parts in data.js, and a test checks that the default
-   choice gives back today's rocket exactly.
+   PARTS CATALOG AND BUILD  (js/catalog.js)
+   Everything you can pick for a rocket, as plain data, plus the build you
+   are working on (`build`) and the functions the sidebar calls to change it.
+   buildParts() turns a build into the same kind of part list as rocket.parts
+   in data.js, and sim.js applyBuild() puts that list into the sim.
+   A test checks that the default build gives back the original rocket.
    SI units, prices in dollars. Numbers marked (tune) are first guesses.
 
    Real-world rules this follows:
    - motors come in fixed diameters (18 mm: A-C, 24 mm: D-E); more power = longer
    - a tube is made for ONE motor diameter. A smaller motor needs an adapter.
    - the delay charge is part of the motor, so it is in the motor price
-   Known gap: A_REF (data.js) is still one fixed 25 mm area, so a thin
-   tube's lower drag only shows up through its own cdA.
+   Where the choices live:
+   - tube, fins, fin material, nose: in `build` (this file)
+   - motor, delay, recovery, wind, angle: in `sel` (sim.js). sel.chute is the
+     index into CHUTES (data.js); recoveryForChute() finds its RECOVERY entry.
    ===================================================================== */
 
 const MOTOR_PRICE = { A: 1.5, C: 3.0, E: 6.5 };   // per flight (single-use)
@@ -50,19 +53,27 @@ const NOSES = [
   { id: "blunt",   name: "Blunt",   length: 0.050, mass: 0.008, cdA: 1.6e-4, cn: 1.8, maxSide: 7, price: 0.8 }
 ];
 
-/* ---- recovery: S, M, L are the CHUTES in data.js; the streamer is new (lands fast, very cheap).
+/* ---- recovery. chuteIdx = which entry of CHUTES (data.js) it uses (-1 = none): that is
+        where the drag area and the mass come from.
         cordN = pull the cord takes before it snaps ---- */
 const RECOVERY = [
-  { id: "streamer", name: "Streamer",     cdA: 0.008, mass: 0.002, cordN: 14, price: 0.5 },
-  { id: "S",        name: "Small chute",  cordN: 22, price: 1.0 },
-  { id: "M",        name: "Medium chute", cordN: 22, price: 1.5 },
-  { id: "L",        name: "Large chute",  cordN: 22, price: 2.5 }
+  { id: "none",     name: "No recovery",  chuteIdx: -1, cordN: 22, price: 0 },
+  { id: "streamer", name: "Streamer",     chuteIdx: 3,  cordN: 14, price: 0.5 },
+  { id: "S",        name: "Small chute",  chuteIdx: 0,  cordN: 22, price: 1.0 },
+  { id: "M",        name: "Medium chute", chuteIdx: 1,  cordN: 22, price: 1.5 },
+  { id: "L",        name: "Large chute",  chuteIdx: 2,  cordN: 22, price: 2.5 }
 ];
 
 /* today's rocket */
 const DEFAULT_BUILD = { tube: "t24-thin", fins: "trapezoid", finMat: "balsa", nose: "conical", recovery: "M" };
 
+/* The rocket being built. The sidebar changes this (through chooseBuild below).
+   build.recovery is kept in step with sel.chute by applyBuild(); sel.chute is the one that counts. */
+const build = Object.assign({}, DEFAULT_BUILD);
+
 function catalogPick(list, id) { return list.find(function (x) { return x.id === id; }); }
+
+function recoveryForChute(idx) { return RECOVERY.find(function (r) { return r.chuteIdx === idx; }) || RECOVERY[0]; }
 
 function motorFit(tube, motor) {                  // "ok", "adapter" (smaller motor) or "no" (too big)
   const mm = Math.round(motor.diameter * 1000) > 18 ? 24 : 18;
@@ -91,7 +102,8 @@ function buildParts(b) {
     { name: "Nose cone", kind: "nose", length: nose.length, width: d, mass: nose.mass, cdA: nose.cdA,
       cn: nose.cn, cpAt: shape.length + TUBE_LENGTH + nose.length * 0.5, maxSide: nose.maxSide, color: "#e67e22" },
     { name: "Motor", kind: "motor", length: 0.07, width: 0.018, mass: 0, cdA: 0, at: 0.035, color: "#34495e", inside: true },
-    { name: "Parachute", kind: "chute", length: 0, width: 0, mass: 0, cdA: 0, at: 0.30, maxPull: rec.cordN, color: "#f5c542", inside: true }
+    { name: "Parachute", kind: "chute", length: 0, width: 0, mass: 0, cdA: 0, at: 0.30, maxPull: rec.cordN, color: "#f5c542", inside: true,
+      attach: shape.length + TUBE_LENGTH }          // the shock cord ties on at the base of the nose cone
   ];
   let up = 0;
   for (let i = 0; i < parts.length; i++) {
@@ -100,4 +112,58 @@ function buildParts(b) {
     if (!p.inside) { p.at = up + p.length / 2; up += p.length; }
   }
   return parts;
+}
+
+
+/* ---------------------------------------------------------------------
+   CHANGING THE BUILD (the sidebar and the keyboard both call these)
+   Everything is locked once the rocket is lit: press R to reset first.
+   applyLoadout() is in main.js: it rebuilds the rocket and the camera.
+   --------------------------------------------------------------------- */
+const BUILD_LISTS = { tube: TUBES, fins: FIN_SHAPES, finMat: FIN_MATERIALS, nose: NOSES };
+
+function chooseBuild(field, id) {                 // field: "tube", "fins", "finMat" or "nose"
+  if (sim.ignited || !BUILD_LISTS[field] || !catalogPick(BUILD_LISTS[field], id)) return;
+  build[field] = id;
+  applyLoadout();
+}
+
+function chooseRecovery(id) {                     // "none", "streamer", "S", "M" or "L"
+  const r = catalogPick(RECOVERY, id);
+  if (sim.ignited || !r) return;
+  sel.chute = r.chuteIdx;
+  applyLoadout();
+}
+
+function chooseMotor(i) {
+  if (sim.ignited || !MOTORS[i]) return;
+  sel.motor = i;
+  applyLoadout();
+}
+
+function chooseDelay(i) {
+  if (sim.ignited || DELAYS[i] === undefined) return;
+  sel.delay = i;
+}
+
+function chooseWind(i) {
+  if (sim.ignited || WINDS[i] === undefined) return;
+  sel.wind = i;
+}
+
+function chooseWindDir(dir) {                     // -1 = blows toward the left, 1 = toward the right
+  if (sim.ignited || (dir !== -1 && dir !== 1)) return;
+  sel.windDir = dir;
+}
+
+function chooseAngle(i) {
+  if (sim.ignited || ANGLES[i] === undefined) return;
+  sel.angle = i;
+  refreshLoadout();                               // the rod tilt shows on the pad straight away
+}
+
+function launchBlocked() {                        // "" when it can launch, otherwise the reason why not
+  const tube = catalogPick(TUBES, build.tube), motor = MOTORS[sel.motor];
+  if (motorFit(tube, motor) === "no") return "The " + motor.name + " motor is too big for this tube";
+  return "";
 }
