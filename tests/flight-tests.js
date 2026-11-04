@@ -127,7 +127,7 @@ try {
   key("KeyD"); key("KeyH"); frames(3);
   key("KeyR"); frames(3);
   check(tele.n === 0 && sim.ignited === false, "reset clears the flight and telemetry");
-  check(Math.abs(get("cam.zoom") - 64 / get("ROCKET_H")) < 1e-9, `camera zoom is fixed by rocket size (${get("cam.zoom").toFixed(0)} px/m)`);
+  check(Math.abs(get("cam.zoom") - get("CAM_ROCKET_PX") / get("ROCKET_H")) < 1e-9, `camera zoom is fixed by rocket size (${get("cam.zoom").toFixed(0)} px/m)`);
 } catch (e) { check(false, "exception: " + e.stack); }
 
 /* ---- 5. rotation ---- */
@@ -213,6 +213,23 @@ for (const w of [0, 2, 3, 4, 5]) {
 }
 sel.wind = 0;
 function WINDS_() { return get("WINDS"); }
+
+/* ---- 10. camera zoom ---- */
+console.log("\n10. Camera zoom");
+sandbox.resetAll();
+const z0 = get("cam.target");
+key("Equal"); check(get("cam.target") > z0, "+ zooms in");
+key("Minus"); key("Minus"); check(get("cam.target") < z0, "- zooms out");
+listeners.wheel({ deltaY: -100, preventDefault() {} });
+check(get("cam.target") > z0 * 0.8, "mouse wheel up zooms in");
+sandbox.resetAll();
+key("KeyZ"); check(Math.abs(get("cam.target") * get("ROCKET_H") - 240) < 1e-6, "Z jumps to the close preset");
+frames(60); check(Math.abs(get("cam.zoom") - get("cam.target")) < 1e-6, "zoom eases to its target");
+for (let i = 0; i < 100; i++) key("Equal");
+check(get("cam.target") * get("ROCKET_H") <= get("CAM_MAX_PX") + 1e-6, "zoom stops at the closest limit");
+for (let i = 0; i < 100; i++) key("Minus");
+check(get("cam.target") * get("ROCKET_H") >= get("CAM_MIN_PX") - 1e-6, "zoom stops at the widest limit");
+sandbox.resetAll();
 
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);

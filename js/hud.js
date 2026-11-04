@@ -267,6 +267,6 @@ function drawHud(dtFrame) {
   ctx.font = "12px monospace";
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
-  ctx.fillText("Space: launch  1-3: motor  4-6: delay  7-9: chute S/M/L  0: no chute  R: reset", 12, Hc - 26);
+  ctx.fillText("Space: launch  1-3: motor  4-6: delay  7-9: chute S/M/L  0: no chute  R: reset Z / + / - / wheel: zoom", 12, Hc - 26);
   ctx.fillText("W: wind speed  Q: wind direction  A: launch angle  G: graphs  E: export  D: debug  H: sharp  T: time warp", 12, Hc - 10);
 }

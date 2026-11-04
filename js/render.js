@@ -146,6 +146,14 @@ function drawChute() {                                    // drawn in world spac
   ctx.restore();
 }
 
+if (cam.zoom * ROCKET_H < 8) {                          // too small to see: draw a dot
+  ctx.fillStyle = "#e74c3c";
+  ctx.beginPath();
+  ctx.arc(sx(sim.x), sy(sim.y + sim.cg0), 4, 0, 6.2832);
+  ctx.fill();
+}
+
+
 function drawRocket() {
   const z = cam.zoom;
   ctx.save();

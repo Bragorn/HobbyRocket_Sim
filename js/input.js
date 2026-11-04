@@ -7,6 +7,8 @@
 
 window.addEventListener("keydown", function (e) {
   if (e.code === "Space") e.preventDefault();
+  if (e.code === "Equal" || e.code === "NumpadAdd") { zoomBy(1.15); return; }
+  if (e.code === "Minus" || e.code === "NumpadSubtract") { zoomBy(1 / 1.15); return; }
   if (e.repeat) return;
 
   if (e.code === "Space") launch();
@@ -19,6 +21,7 @@ window.addEventListener("keydown", function (e) {
   else if (e.code === "KeyQ" && !sim.ignited) sel.windDir = -sel.windDir;
   else if (e.code === "KeyA" && !sim.ignited) { sel.angle = (sel.angle + 1) % ANGLES.length; refreshLoadout(); }
   else if (e.code === "KeyT") warp = warp === 1 ? 4 : warp === 4 ? 16 : 1;
+  else if (e.code === "KeyZ") zoomPreset();
   else if (!sim.ignited && e.code.indexOf("Digit") === 0) {
     const n = parseInt(e.code.slice(5), 10);
     if (n >= 1 && n <= 3 && n - 1 < MOTORS.length) sel.motor = n - 1;          // 1-3 motor
@@ -30,3 +33,7 @@ window.addEventListener("keydown", function (e) {
 });
 
 window.addEventListener("resize", resize);
+window.addEventListener("wheel", function (e) {
+  e.preventDefault();
+  zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+}, { passive: false });
