@@ -26,10 +26,10 @@ const TUBE_LENGTH = 0.30;                         // fixed for now
 /* ---- tubes: size x wall. crushN = thrust it takes before crumpling,
         bendNm = sideways bending moment it takes (both: tune, not used yet) ---- */
 const TUBES = [
-  { id: "t24-thin",  name: "24 mm tube, thin wall",  diameter: 0.025, motorMm: 24, mass: 0.030, cdA: 0.8e-4, crushN: 35, bendNm: 1.5, price: 2.0 },
-  { id: "t24-thick", name: "24 mm tube, thick wall", diameter: 0.025, motorMm: 24, mass: 0.045, cdA: 0.8e-4, crushN: 90, bendNm: 3.5, price: 4.0 },
-  { id: "t18-thin",  name: "18 mm tube, thin wall",  diameter: 0.019, motorMm: 18, mass: 0.020, cdA: 0.5e-4, crushN: 20, bendNm: 0.6, price: 1.5 },
-  { id: "t18-thick", name: "18 mm tube, thick wall", diameter: 0.019, motorMm: 18, mass: 0.030, cdA: 0.5e-4, crushN: 50, bendNm: 1.4, price: 3.0 }
+  { id: "t24-thin",  name: "24 mm tube, thin wall",  diameter: 0.025, motorMm: 24, mass: 0.030, cdA: 0.8e-4, crushN: 35, bendNm: 1.5, price: 2.0, color: "#ecf0f1" },
+  { id: "t24-thick", name: "24 mm tube, thick wall", diameter: 0.025, motorMm: 24, mass: 0.045, cdA: 0.8e-4, crushN: 90, bendNm: 3.5, price: 4.0, color: "#c4ced4" },
+  { id: "t18-thin",  name: "18 mm tube, thin wall",  diameter: 0.019, motorMm: 18, mass: 0.020, cdA: 0.5e-4, crushN: 20, bendNm: 0.6, price: 1.5, color: "#f4d9a0" },
+  { id: "t18-thick", name: "18 mm tube, thick wall", diameter: 0.019, motorMm: 18, mass: 0.030, cdA: 0.5e-4, crushN: 50, bendNm: 1.4, price: 3.0, color: "#d9a95a" }
 ];
 
 /* ---- fins: shape x material. cpAt = height of the fins' sideways push above the rocket's
@@ -96,11 +96,11 @@ function buildParts(b) {
   const rec = catalogPick(RECOVERY, b.recovery), d = tube.diameter;
   const parts = [
     { name: "Fins", kind: "fins", length: shape.length, width: d, span: shape.span, mass: shape.mass * mat.mass, cdA: shape.cdA,
-      cn: shape.cn, cpAt: shape.cpAt, maxSide: shape.maxSide * mat.strength, maxQ: 30000 * shape.stiff * mat.strength, color: mat.color },
+      cn: shape.cn, cpAt: shape.cpAt, maxSide: shape.maxSide * mat.strength, maxQ: 30000 * shape.stiff * mat.strength, color: mat.color, shape: shape.id },
     { name: "Body tube", kind: "tube", length: TUBE_LENGTH, width: d, mass: tube.mass, cdA: tube.cdA,
-      crushN: tube.crushN, bendNm: tube.bendNm, color: "#ecf0f1" },
+      crushN: tube.crushN, bendNm: tube.bendNm, color: tube.color },
     { name: "Nose cone", kind: "nose", length: nose.length, width: d, mass: nose.mass, cdA: nose.cdA,
-      cn: nose.cn, cpAt: shape.length + TUBE_LENGTH + nose.length * 0.5, maxSide: nose.maxSide, color: "#e67e22" },
+      cn: nose.cn, cpAt: shape.length + TUBE_LENGTH + nose.length * 0.5, maxSide: nose.maxSide, color: "#e67e22", shape: nose.id },
     { name: "Motor", kind: "motor", length: 0.07, width: 0.018, mass: 0, cdA: 0, at: 0.035, color: "#34495e", inside: true },
     { name: "Parachute", kind: "chute", length: 0, width: 0, mass: 0, cdA: 0, at: 0.30, maxPull: rec.cordN, color: "#f5c542", inside: true,
       attach: shape.length + TUBE_LENGTH }          // the shock cord ties on at the base of the nose cone

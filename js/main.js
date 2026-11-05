@@ -18,13 +18,10 @@ function resetAll() {
 }
 
 /* Call after the build, the motor or the chute choice changes (catalog.js does).
-   Rebuilds the rocket and keeps it the same size on screen, even if its height changed. */
+   Rebuilds the rocket. The zoom stays put, so a shorter nose really looks shorter. */
 function applyLoadout() {
   if (sim.ignited) return;
-  const px = cam.target * ROCKET_H;
   applyBuild();
-  setZoomPx(px);
-  cam.zoom = cam.target;
   refreshLoadout();
 }
 

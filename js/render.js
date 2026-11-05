@@ -14,6 +14,7 @@ let Wc = 0, Hc = 0;
 let sharp = false;
 let showDebug = true;
 let graphPage = 0;         // 0 and 1 = graph pages, -1 = graphs off
+let showMarks = true;      // M: show the center of gravity (CG) and center of pressure (CP) on the rocket
 
 function resize() {
   const side = typeof uiWidth === "function" ? uiWidth() : 0;   // width taken by the sidebar
@@ -148,6 +149,98 @@ function drawChute() {                                    // drawn in world spac
   ctx.restore();
 }
 
+/* ---- the look of each part (looks only, no physics) ----
+   A fin is drawn as an outline for one side, mirrored for the other.
+   Each point is [out, up]: out = 0 at the tube wall and 1 at the fin tip,
+   up = 0 at the bottom of the fin root and 1 at its top. Below 0 hangs off the back. */
+const FIN_OUTLINES = {
+  trapezoid: [[0, 0], [0, 1], [1, 0.45], [1, 0]],
+  swept:     [[0, 0], [0, 1], [1, 0.40], [1, -0.20]],
+  delta:     [[0, 0], [0, 1], [1, 0.45], [1, 0.20]],
+  large:     [[0, 0], [0, 1], [0.9, 0.85], [1, 0.55], [1, 0]]
+};
+
+function drawFins(p, cx, bottom, z) {
+  const w = p.width * z, h = p.length * z;
+  const half = Math.max(w / 2, p.span * z / 2);              // half of the fin span, in pixels
+  const out = FIN_OUTLINES[p.shape] || FIN_OUTLINES.trapezoid;
+  ctx.fillStyle = p.color;
+  ctx.fillRect(cx - w / 2, bottom - h, w, h);                // the fin section of the tube
+  for (let side = -1; side <= 1; side += 2) {
+    ctx.beginPath();
+    for (let i = 0; i < out.length; i++) {
+      const X = cx + side * (w / 2 + (half - w / 2) * out[i][0]);
+      const Y = bottom - h * out[i][1];
+      if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    if (z > 60) { ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1; ctx.stroke(); }
+  }
+}
+
+function drawNose(p, cx, bottom, top, w) {
+  const h = bottom - top;
+  ctx.fillStyle = p.color;
+  ctx.beginPath();
+  if (p.shape === "ogive") {                                 // curved sides, sharp tip
+    ctx.moveTo(cx - w / 2, bottom);
+    ctx.bezierCurveTo(cx - w / 2, bottom - h * 0.55, cx - w * 0.2, top + h * 0.12, cx, top);
+    ctx.bezierCurveTo(cx + w * 0.2, top + h * 0.12, cx + w / 2, bottom - h * 0.55, cx + w / 2, bottom);
+  } else if (p.shape === "blunt") {                          // short and rounded
+    ctx.moveTo(cx - w / 2, bottom);
+    ctx.lineTo(cx - w / 2, top + h * 0.55);
+    ctx.ellipse(cx, top + h * 0.55, w / 2, h * 0.55, 0, Math.PI, 2 * Math.PI);
+    ctx.lineTo(cx + w / 2, bottom);
+  } else {                                                   // conical: straight sides
+    ctx.moveTo(cx - w / 2, bottom);
+    ctx.lineTo(cx, top);
+    ctx.lineTo(cx + w / 2, bottom);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* CG (black and white circle) and CP (red circle) on the rocket's axis. The CP has to
+   sit BELOW the CG, toward the fins, for the rocket to be stable. Labels stay upright. */
+function drawMarkers(cx, baseY, z) {
+  const cp = rocketCP();
+  if (cp === null) return;
+  const r = 5, labels = z * ROCKET_H > 60;
+  const spots = [[sim.cg, "CG", -1], [cp, "CP", 1]];
+  for (let i = 0; i < spots.length; i++) {
+    const y = baseY - spots[i][0] * z;
+    ctx.save();
+    ctx.translate(cx, y);
+    ctx.lineWidth = 1.5;
+    if (i === 0) {
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill();
+      ctx.fillStyle = "#111";
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, 0, Math.PI / 2); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, Math.PI, Math.PI * 1.5); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#111";
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.stroke();
+    } else {
+      ctx.fillStyle = "#e74c3c";
+      ctx.strokeStyle = "#fff";
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill(); ctx.stroke();
+    }
+    if (labels) {
+      ctx.rotate(-sim.theta);
+      ctx.font = "11px monospace";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = spots[i][2] < 0 ? "right" : "left";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.strokeText(spots[i][1], spots[i][2] * (r + 6), 0);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(spots[i][1], spots[i][2] * (r + 6), 0);
+    }
+    ctx.restore();
+  }
+}
+
 function drawRocket() {
   const z = cam.zoom;
   ctx.save();
@@ -191,27 +284,16 @@ function drawRocket() {
 
     if (p.kind === "tube") {
       ctx.fillRect(cx - w / 2, top, w, h);
+      ctx.fillStyle = "rgba(0,0,0,0.14)";                 // a little shading down the right side
+      ctx.fillRect(cx + w * 0.2, top, w * 0.3, h);
     } else if (p.kind === "nose") {
-      ctx.beginPath();
-      ctx.moveTo(cx - w / 2, bottom);
-      ctx.lineTo(cx, top);
-      ctx.lineTo(cx + w / 2, bottom);
-      ctx.closePath();
-      ctx.fill();
+      drawNose(p, cx, bottom, top, w);
     } else if (p.kind === "fins") {
-      const s = (p.span * z) / 2;                         // half of the fin span in pixels
-      ctx.fillRect(cx - w / 2, top, w, h);
-      ctx.beginPath();
-      ctx.moveTo(cx - w / 2, top + h * 0.15);
-      ctx.lineTo(cx - s, bottom);
-      ctx.lineTo(cx - w / 2, bottom);
-      ctx.moveTo(cx + w / 2, top + h * 0.15);
-      ctx.lineTo(cx + s, bottom);
-      ctx.lineTo(cx + w / 2, bottom);
-      ctx.fill();
+      drawFins(p, cx, bottom, z);
     }
     up += p.length;
   }
+  if (showMarks) drawMarkers(cx, baseY, z);
   ctx.restore();
 
   if (z * ROCKET_H < 8) {                                 // too small to see: draw a dot

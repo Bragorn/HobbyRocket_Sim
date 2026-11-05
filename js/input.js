@@ -15,6 +15,7 @@ window.addEventListener("keydown", function (e) {
   if (e.code === "Space") { if (launchBlocked() === "") launch(); }
   else if (e.code === "KeyR") resetAll();
   else if (e.code === "KeyD") showDebug = !showDebug;
+  else if (e.code === "KeyM") showMarks = !showMarks;
   else if (e.code === "KeyH") { sharp = !sharp; resize(); }
   else if (e.code === "KeyG") graphPage = (graphPage + 1 >= GRAPH_PAGES.length) ? -1 : graphPage + 1;
   else if (e.code === "KeyE") exportCsv();

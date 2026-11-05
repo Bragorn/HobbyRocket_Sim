@@ -268,5 +268,5 @@ function drawHud(dtFrame) {
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
   ctx.fillText("Space: launch  R: reset  Z / + / - / wheel: zoom   (rocket parts: sidebar)", 12, Hc - 26);
-  ctx.fillText("W: wind speed  Q: wind direction  A: launch angle  G: graphs  E: export  D: debug  H: sharp  T: time warp", 12, Hc - 10);
+  ctx.fillText("W: wind speed  Q: wind direction  A: launch angle  G: graphs  M: CG/CP  E: export  D: debug  H: sharp  T: time warp", 12, Hc - 10);
 }

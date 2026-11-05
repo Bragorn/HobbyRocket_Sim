@@ -130,7 +130,7 @@ try {
   key("KeyD"); key("KeyH"); frames(3);
   key("KeyR"); frames(3);
   check(tele.n === 0 && sim.ignited === false, "reset clears the flight and telemetry");
-  check(Math.abs(get("cam.zoom") - get("CAM_ROCKET_PX") / get("ROCKET_H")) < 1e-9, `camera zoom is fixed by rocket size (${get("cam.zoom").toFixed(0)} px/m)`);
+  check(Math.abs(get("cam.zoom") - get("CAM_ROCKET_PX") / get("CAM_REF_H")) < 1e-9, `camera zoom is fixed by the reference height (${get("cam.zoom").toFixed(0)} px/m)`);
 } catch (e) { check(false, "exception: " + e.stack); }
 
 /* ---- 5. rotation ---- */
@@ -205,6 +205,26 @@ check(sel.angle === 3 && Math.abs(sim.theta - 5 * Math.PI / 180) < 1e-9, "A tilt
 key("KeyQ"); check(sel.windDir === -1, "Q flips the wind direction"); key("KeyQ");
 sel.angle = 2; sandbox.resetAll();
 
+/* ---- drawing: every look of every part must draw without errors ---- */
+console.log("\n   Drawing every fin x nose x tube look (with markers on and off)");
+{
+  let drawn = 0, drawErr = null;
+  try {
+    for (const f of get("FIN_SHAPES")) for (const n of get("NOSES")) for (const t of get("TUBES")) {
+      sandbox.resetAll();
+      sandbox.chooseBuild("fins", f.id); sandbox.chooseBuild("nose", n.id); sandbox.chooseBuild("tube", t.id);
+      get("showMarks = true"); frames(1); get("showMarks = false"); frames(1); drawn += 2;
+    }
+  } catch (e) { drawErr = e; }
+  get("showMarks = true");
+  for (const fld of ["tube", "fins", "nose"]) sandbox.chooseBuild(fld, get("DEFAULT_BUILD")[fld === "fins" ? "fins" : fld]);
+  sandbox.resetAll();
+  check(!drawErr && drawn === 96, drawErr ? "drawing failed: " + drawErr.stack : `${drawn} frames drawn with every part look`);
+  const shapes = get("rocket.parts").map(p => p.shape).filter(Boolean);
+  check(shapes.join() === "trapezoid,conical", "parts carry the shape the renderer needs (" + shapes.join(", ") + ")");
+  key("KeyM"); check(get("showMarks") === false, "M hides the CG/CP markers"); key("KeyM");
+}
+
 /* ---- information only: how close do parts get to their limits? ---- */
 console.log("\n   Stress table (most loaded part, as % of its limit; nothing here is a pass/fail)");
 for (const w of [0, 2, 3, 4, 5]) {
@@ -226,12 +246,12 @@ key("Minus"); key("Minus"); check(get("cam.target") < z0, "- zooms out");
 listeners.wheel({ deltaY: -100, preventDefault() {} });
 check(get("cam.target") > z0 * 0.8, "mouse wheel up zooms in");
 sandbox.resetAll();
-key("KeyZ"); check(Math.abs(get("cam.target") * get("ROCKET_H") - 240) < 1e-6, "Z jumps to the close preset");
+key("KeyZ"); check(Math.abs(get("cam.target") * get("CAM_REF_H") - 240) < 1e-6, "Z jumps to the close preset");
 frames(60); check(Math.abs(get("cam.zoom") - get("cam.target")) < 1e-6, "zoom eases to its target");
 for (let i = 0; i < 100; i++) key("Equal");
-check(get("cam.target") * get("ROCKET_H") <= get("CAM_MAX_PX") + 1e-6, "zoom stops at the closest limit");
+check(get("cam.target") * get("CAM_REF_H") <= get("CAM_MAX_PX") + 1e-6, "zoom stops at the closest limit");
 for (let i = 0; i < 100; i++) key("Minus");
-check(get("cam.target") * get("ROCKET_H") >= get("CAM_MIN_PX") - 1e-6, "zoom stops at the widest limit");
+check(get("cam.target") * get("CAM_REF_H") >= get("CAM_MIN_PX") - 1e-6, "zoom stops at the widest limit");
 sandbox.resetAll();
 
 /* ---- 11. motor sizes ---- */
@@ -282,12 +302,13 @@ const baseFlight = fly(1, 1, 1);
 check(Math.abs(get("ROCKET_H") - 0.44) < 1e-9 && get("REF_AREA") === get("A_REF"), "default build: 44 cm tall, reference area unchanged");
 sandbox.resetAll();                               // the choosers only work on the pad, never after ignition
 
+const zoomBefore = get("cam.target");
 sandbox.chooseBuild("tube", "t18-thin"); sandbox.chooseBuild("fins", "swept"); sandbox.chooseBuild("nose", "ogive");
 check(partNamed("Body tube").width === 0.019 && partNamed("Fins").span === 0.050 && partNamed("Nose cone").length === 0.090, "choosing tube, fins and nose swaps the real parts");
 check(Math.abs(get("ROCKET_H") - (0.07 + 0.30 + 0.09)) < 1e-9 && get("ROCKET_H") === get("rocketHeight()"), `rocket height follows the build (${(get("ROCKET_H") * 100).toFixed(0)} cm)`);
 check(get("REF_AREA") < get("A_REF"), "a thinner tube has a smaller reference area");
 check(Math.abs(get("chuteAttachAt()") - 0.37) < 1e-9, "the shock cord ties on at fin length + tube length (swept fins: 37 cm)");
-check(Math.abs(get("cam.target") * get("ROCKET_H") - get("CAM_ROCKET_PX")) < 1e-6, "the camera keeps the rocket the same size on screen");
+check(get("cam.target") === zoomBefore, "changing the build does not change the zoom, so parts keep their true size");
 const changed = fly(1, 1, 1);
 check(changed.apogee !== baseFlight.apogee && Number.isFinite(changed.apogee) && sandbox.flightState() === "LANDED", `a different build flies differently (apogee ${baseFlight.apogee.toFixed(0)} m -> ${changed.apogee.toFixed(0)} m)`);
 
