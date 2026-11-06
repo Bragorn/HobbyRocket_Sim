@@ -23,6 +23,20 @@ const ANGLES = [-10, -5, 0, 5, 10];      // launch rod tilt in degrees (+ leans 
 const ROD_ERROR_DEG = 0.7;               // random rod/rocket misalignment, up to +/- this many degrees
 const launchOpts = { imperfect: true, seed: 0 };   // seed 0 = a new random one every launch. Tests set a fixed one
 
+/* ---- flight-to-flight variety. Only with launchOpts.imperfect on, and all drawn from the flight's seed,
+        so the same seed still gives the same flight ---- */
+const THRUST_MISALIGN_DEG = 0.25;        // the motor pushes up to +/- this many degrees off the rocket's axis
+const ADAPTER_MISALIGN_MULT = 1.5;       // a smaller motor in an adapter sits looser: its misalignment can be this much bigger
+const THRUST_VARY = 0.04;                // this motor pushes up to +/- this fraction harder or softer than rated
+const GUST_AMP_MIN = 0.20, GUST_AMP_MAX = 0.45;   // how hard gusts swing the wind speed (fraction), picked per flight
+
+/* ---- breaking ---- */
+const FIN_BIAS = 0.04;                   // how hard the remaining fins push the rocket sideways when one on a side is gone (x dynamic pressure x body area)
+
+/* ---- placement ---- */
+const FIN_MM_MIN = -20, FIN_MM_MAX = 120;    // fin position, mm up the tube from the back end (negative = hanging off the back)
+const BALLAST_STEP_G = 5, BALLAST_MAX_G = 30;// weight added in the nose, grams
+
 /* ---- landing verdicts (impact speed in m/s) ---- */
 const SAFE_LANDING_SPEED = 8;    // at or below this: SAFE
 const CRASH_SPEED = 15;          // above this: CRASH. In between: HARD

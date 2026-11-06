@@ -14,6 +14,7 @@ let Wc = 0, Hc = 0;
 let sharp = false;
 let showDebug = true;
 let graphPage = 0;         // 0 and 1 = graph pages, -1 = graphs off
+const ARROW_PX = 22;       // below this rocket height (in pixels) the rocket is drawn as an arrow instead
 let showMarks = true;      // M: show the center of gravity (CG) and center of pressure (CP) on the rocket
 
 function resize() {
@@ -34,7 +35,7 @@ function drawSky() {
   const g = Math.round(190 - 175 * t);
   const b = Math.round(235 - 195 * t);
   ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
-  ctx.fillRect(0, 0, Wc, Hc);
+  ctx.fillRect(-30, -30, Wc + 60, Hc + 60);              // a bit oversized so shaking never shows an edge
 }
 
 function niceStep(x) {                                    // round to 1, 2, 5, 10 x 10^n
@@ -124,6 +125,14 @@ function drawFlame(cx, baseY, z) {
 
 function drawChute() {                                    // drawn in world space, pointing where the pull goes
   if (!sim.chuteDeployed || sel.chute < 0 || chutePart.broken) return;
+  if (sim.landed) {                                       // landed: the canopy lies collapsed beside the rocket
+    const c = CHUTES[sel.chute], dir = sim.rest.theta >= 0 ? 1 : -1;
+    ctx.fillStyle = c.color;
+    ctx.beginPath();
+    ctx.ellipse(sx(sim.rest.x + dir * (ROCKET_H - sim.cg0 + 0.1)), sy(0) - 1.5, Math.max(2, c.diameter * cam.zoom * 0.45), 2.5, 0, 0, 6.2832);
+    ctx.fill();
+    return;
+  }
   const c = CHUTES[sel.chute], z = cam.zoom, open = sim.chuteOpen;
   const a = chuteAttachAt() - sim.cg0;
   const ax = sim.x + a * Math.sin(sim.theta);
@@ -160,17 +169,26 @@ const FIN_OUTLINES = {
   large:     [[0, 0], [0, 1], [0.9, 0.85], [1, 0.55], [1, 0]]
 };
 
+function bodyColor() {                                       // the tube's color (the aft end of the airframe matches it)
+  for (let i = 0; i < rocket.parts.length; i++) if (rocket.parts[i].kind === "tube") return rocket.parts[i].color;
+  return "#ecf0f1";
+}
+
 function drawFins(p, cx, bottom, z) {
   const w = p.width * z, h = p.length * z;
+  const root = bottom - (p.shift || 0) * z;                  // the fins can be glued higher up the tube (or hang off the back)
   const half = Math.max(w / 2, p.span * z / 2);              // half of the fin span, in pixels
   const out = FIN_OUTLINES[p.shape] || FIN_OUTLINES.trapezoid;
+  ctx.fillStyle = bodyColor();
+  ctx.fillRect(cx - w / 2, bottom - h, w, h);                // the aft end of the airframe
   ctx.fillStyle = p.color;
-  ctx.fillRect(cx - w / 2, bottom - h, w, h);                // the fin section of the tube
   for (let side = -1; side <= 1; side += 2) {
+    if (p.only && p.only !== side) continue;                 // a single loose fin
+    if (p.fins && p.fins[side < 0 ? 0 : 1].gone) continue;   // this one has broken off
     ctx.beginPath();
     for (let i = 0; i < out.length; i++) {
       const X = cx + side * (w / 2 + (half - w / 2) * out[i][0]);
-      const Y = bottom - h * out[i][1];
+      const Y = root - h * out[i][1];
       if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
     }
     ctx.closePath();
@@ -203,10 +221,12 @@ function drawNose(p, cx, bottom, top, w) {
 
 /* CG (black and white circle) and CP (red circle) on the rocket's axis. The CP has to
    sit BELOW the CG, toward the fins, for the rocket to be stable. Labels stay upright. */
-function drawMarkers(cx, baseY, z) {
+function drawMarkers(cx, baseY, z, theta) {
   const cp = rocketCP();
   if (cp === null) return;
-  const r = 5, labels = z * ROCKET_H > 60;
+  const tall = z * ROCKET_H;                      // the rocket's height on screen, px
+  if (tall < 30) return;                          // too small: the dots would cover the rocket
+  const r = Math.max(2, Math.min(5, tall * 0.045)), labels = tall > 60;   // the dots shrink as you zoom out
   const spots = [[sim.cg, "CG", -1], [cp, "CP", 1]];
   for (let i = 0; i < spots.length; i++) {
     const y = baseY - spots[i][0] * z;
@@ -227,7 +247,7 @@ function drawMarkers(cx, baseY, z) {
       ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill(); ctx.stroke();
     }
     if (labels) {
-      ctx.rotate(-sim.theta);
+      ctx.rotate(-theta);
       ctx.font = "11px monospace";
       ctx.textBaseline = "middle";
       ctx.textAlign = spots[i][2] < 0 ? "right" : "left";
@@ -241,11 +261,60 @@ function drawMarkers(cx, baseY, z) {
   }
 }
 
+/* The pieces that broke off, each drawn the way the part looks. They lie on their sides once they land. */
+function drawDebris() {
+  const z = cam.zoom;
+  for (let i = 0; i < sim.debris.length; i++) {
+    const d = sim.debris[i];
+    const X = sx(d.x), Y = sy(d.y);
+    if (X < -100 || X > Wc + 100 || Y < -100 || Y > Hc + 100) continue;
+    const w = Math.max(2, d.w * z), h = Math.max(2, d.h * z);
+    ctx.save();
+    ctx.translate(X, Y);
+    ctx.rotate(d.theta);
+    if (d.kind === "fin") {
+      drawFins({ width: d.w, length: d.h, span: d.span, shape: d.shape, color: d.color, shift: 0, only: d.side }, 0, h / 2, z);
+    } else if (d.kind === "fins") {
+      drawFins({ width: d.w, length: d.h, span: d.span, shape: d.shape, color: d.color, shift: 0 }, 0, h / 2, z);
+    } else if (d.kind === "nose") {
+      drawNose({ shape: d.shape, color: d.color }, 0, h / 2, -h / 2, w);
+    } else if (d.kind === "chute") {
+      ctx.fillStyle = d.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w / 2, Math.max(2, w * 0.28), 0, Math.PI, 2 * Math.PI);
+      ctx.closePath();
+      ctx.fill();
+    } else {                                              // tube and nose weight: a plain block
+      ctx.fillStyle = d.color;
+      ctx.fillRect(-w / 2, -h / 2, w, Math.max(2, h));
+    }
+    ctx.restore();
+  }
+}
+
+function drawArrow() {                                    // far away: just show where it is and which way it points
+  const pose = rocketPose();
+  ctx.save();
+  ctx.translate(sx(pose.x), sy(pose.yc));
+  ctx.rotate(pose.theta);
+  ctx.fillStyle = "#e74c3c";
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 3); ctx.lineTo(-6, 7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawRocket() {
   const z = cam.zoom;
+  if (z * ROCKET_H < ARROW_PX) { drawArrow(); return; }
+  const pose = rocketPose();                       // in flight: the sim's position and tilt. After landing: tipped over and settled
   ctx.save();
-  ctx.translate(sx(sim.x), sy(sim.y + sim.cg0));   // origin = the balance point
-  ctx.rotate(sim.theta);
+  ctx.translate(sx(pose.x), sy(pose.yc));          // origin = the balance point
+  ctx.rotate(pose.theta);
   const cx = 0;
   const baseY = sim.cg0 * z;                       // the bottom of the rocket hangs this far below it
 
@@ -267,6 +336,10 @@ function drawRocket() {
         ctx.fillRect(cx - mw / 2, baseY - mh, mw, Math.max(3, 0.012 * z));         // delay band at the forward end
         ctx.fillStyle = "#34495e";
         ctx.fillRect(cx - mw * 0.4, baseY, mw * 0.8, Math.max(2, 0.01 * z));       // nozzle
+      } else if (p.kind === "ballast" && p.mass > 0) {        // the weight in the nose: bigger for more grams
+        const bh = Math.max(2, (0.004 + p.mass * 0.6) * z);
+        ctx.fillStyle = "rgba(90,98,105,0.95)";
+        ctx.fillRect(cx - bodyDiameter() * z * 0.22, baseY - p.at * z - bh / 2, bodyDiameter() * z * 0.44, bh);
       } else if (p.kind === "chute" && sel.chute >= 0 && !sim.chuteDeployed) {
         const c = CHUTES[sel.chute], bh = Math.max(2, c.diameter * 0.1 * z);
         ctx.fillStyle = c.color;
@@ -293,25 +366,24 @@ function drawRocket() {
     }
     up += p.length;
   }
-  if (showMarks) drawMarkers(cx, baseY, z);
+  if (showMarks) drawMarkers(cx, baseY, z, pose.theta);
   ctx.restore();
-
-  if (z * ROCKET_H < 8) {                                 // too small to see: draw a dot
-    ctx.fillStyle = "#e74c3c";
-    ctx.beginPath();
-    ctx.arc(sx(sim.x), sy(sim.y + sim.cg0), 4, 0, 6.2832);
-    ctx.fill();
-  }
 }
 
 /* One full frame. The text and graphs live in hud.js. */
 function render(dtFrame) {
+  fxUpdate(dtFrame);
+  ctx.save();
+  if (fx.shake > 0) ctx.translate((Math.random() * 2 - 1) * fx.shake, (Math.random() * 2 - 1) * fx.shake);   // a hard hit shakes the picture (not the text)
   drawSky();
   drawAltitudeLines();
   drawGround();
   drawGroundMarks();
   drawPad();
   drawRocket();
+  drawDebris();
   drawChute();
+  fxDraw();
+  ctx.restore();
   drawHud(dtFrame);
 }

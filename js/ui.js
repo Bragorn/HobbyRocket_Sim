@@ -43,6 +43,15 @@ const UI_PART_GROUPS = [
   { title: "Nose cone", items: NOSES, current: () => build.nose, pick: (it) => chooseBuild("nose", it.id),
     info: (n) => ({ price: n.price, stats: uiMm(n.length) + " · " + uiGr(n.mass) + " · drag " + uiDrag(n.cdA) }) },
 
+  { sec: "Placement", stepper: true, title: "Fin position",
+    value: () => build.finMm, text: (v) => v === 0 ? "at the back end" : v > 0 ? (v / 10) + " cm up the tube" : (-v / 10) + " cm off the back",
+    dec: () => chooseFinShift(build.finMm - 10), inc: () => chooseFinShift(build.finMm + 10),
+    atMin: () => build.finMm <= FIN_MM_MIN, atMax: () => build.finMm >= FIN_MM_MAX, hint: "or drag the fins on the rocket" },
+  { stepper: true, title: "Nose weight",
+    value: () => build.ballastG, text: (v) => v === 0 ? "none" : v + " g",
+    dec: () => chooseBallast(build.ballastG - BALLAST_STEP_G), inc: () => chooseBallast(build.ballastG + BALLAST_STEP_G),
+    atMin: () => build.ballastG <= 0, atMax: () => build.ballastG >= BALLAST_MAX_G, hint: "moves the balance point forward, adds weight" },
+
   { sec: "Recovery", title: "Recovery", items: RECOVERY, current: () => recoveryForChute(sel.chute).id, pick: (it) => chooseRecovery(it.id),
     info: (r) => {
       if (r.chuteIdx < 0) return { price: 0, stats: "nothing opens: the rocket just falls", tone: "bad" };
@@ -73,6 +82,10 @@ const UI_COND_GROUPS = [
     current: () => sel.angle, pick: (it) => chooseAngle(it.id) }
 ];
 
+/* things you can change at any time, even in flight */
+const UI_VIEW_GROUP = { title: "CG / CP dots (M)", items: [{ id: true, name: "show" }, { id: false, name: "hide" }],
+  current: () => showMarks, pick: (it) => { showMarks = it.id; }, always: true };
+
 /* ---- building the page (once) ---- */
 function uiLocked() { return sim.ignited; }
 
@@ -87,7 +100,7 @@ function uiMakeGroup(g, parent, chip) {
     b.type = "button";
     b.tabIndex = -1;                                          // so Space still launches instead of "clicking" a button
     b.addEventListener("mousedown", function (e) { e.preventDefault(); });   // and clicking never takes the keyboard focus
-    b.addEventListener("click", function () { if (!uiLocked()) g.pick(it); });
+    b.addEventListener("click", function () { if (g.always || !uiLocked()) g.pick(it); });
     const o = { it: it, b: b };
     if (chip) {
       b.textContent = it.name;
@@ -103,6 +116,25 @@ function uiMakeGroup(g, parent, chip) {
     g.btns.push(o);
     row.appendChild(b);
   }
+  parent.appendChild(box);
+}
+
+function uiMakeStepper(g, parent) {                           // a title, then  [ - ]  value  [ + ]
+  const box = uiEl("div", "grp");
+  box.appendChild(uiEl("div", "gt", g.title));
+  const row = uiEl("div", "step");
+  g.minus = uiEl("button", "chip", "−");
+  g.plus = uiEl("button", "chip", "+");
+  g.val = uiEl("span", "val");
+  for (const b of [g.minus, g.plus]) {
+    b.type = "button"; b.tabIndex = -1;
+    b.addEventListener("mousedown", function (e) { e.preventDefault(); });
+  }
+  g.minus.addEventListener("click", function () { if (!uiLocked()) g.dec(); });
+  g.plus.addEventListener("click", function () { if (!uiLocked()) g.inc(); });
+  row.appendChild(g.minus); row.appendChild(g.val); row.appendChild(g.plus);
+  box.appendChild(row);
+  if (g.hint) box.appendChild(uiEl("div", "hint", g.hint));
   parent.appendChild(box);
 }
 
@@ -125,7 +157,7 @@ function uiBuild() {
   const parts = uiEl("div", "parts");
   for (const g of UI_PART_GROUPS) {
     if (g.sec) parts.appendChild(uiEl("div", "sec", g.sec));
-    uiMakeGroup(g, parts, false);
+    if (g.stepper) uiMakeStepper(g, parts); else uiMakeGroup(g, parts, false);
     uiParts.push(g);
   }
 
@@ -133,11 +165,20 @@ function uiBuild() {
   cond.appendChild(uiEl("div", "sec", "Launch conditions"));
   for (const g of UI_COND_GROUPS) { uiMakeGroup(g, cond, true); uiConds.push(g); }
 
-  sideEl.appendChild(head); sideEl.appendChild(parts); sideEl.appendChild(cond);
+  const view = uiEl("div", "view");
+  uiMakeGroup(UI_VIEW_GROUP, view, true);
+
+  sideEl.appendChild(head); sideEl.appendChild(parts); sideEl.appendChild(cond); sideEl.appendChild(view);
 }
 
 /* ---- keeping it up to date ---- */
 function uiUpdateGroup(g) {
+  if (g.stepper) {
+    g.val.textContent = g.text(g.value());
+    g.minus.classList.toggle("off", g.atMin());
+    g.plus.classList.toggle("off", g.atMax());
+    return;
+  }
   const cur = g.current(), off = g.off ? g.off() : false;
   for (const o of g.btns) {
     o.b.classList.toggle("on", o.it.id === cur);
@@ -172,8 +213,8 @@ function uiUpdateSummary() {
 }
 
 function uiSignature() {
-  return [build.tube, build.fins, build.finMat, build.nose, sel.motor, sel.delay, sel.chute,
-          sel.wind, sel.windDir, sel.angle, sim.ignited ? 1 : 0].join("|");
+  return [build.tube, build.fins, build.finMat, build.nose, build.finMm, build.ballastG, sel.motor, sel.delay, sel.chute,
+          sel.wind, sel.windDir, sel.angle, sim.ignited ? 1 : 0, showMarks ? 1 : 0].join("|");
 }
 
 function uiRefresh() {
@@ -184,6 +225,7 @@ function uiRefresh() {
   sideEl.classList.toggle("locked", locked);
   for (const g of uiParts) uiUpdateGroup(g);
   for (const g of uiConds) uiUpdateGroup(g);
+  uiUpdateGroup(UI_VIEW_GROUP);
   uiUpdateSummary();
   uiBits.launch.disabled = locked || blocked !== "";
   uiBits.msg.textContent = locked ? "Locked while the rocket is lit. Press Reset (R) to change it." : blocked;

@@ -12,7 +12,7 @@
    ===================================================================== */
 const fs = require("fs"), path = require("path"), vm = require("vm");
 const root = path.join(__dirname, "..");
-const FILES = ["data", "catalog", "telemetry", "sim", "camera", "render", "hud", "input", "main"];
+const FILES = ["data", "catalog", "telemetry", "sim", "camera", "fx", "render", "hud", "input", "main"];
 
 /* ---- a fake browser, just enough for the game files to load ---- */
 const drawCalls = {};
@@ -162,7 +162,12 @@ const keep = { finSide: fins.maxSide, finQ: fins.maxQ, noseSide: nose.maxSide };
 sel.wind = 2;
 fins.maxSide = 0.05; fly(1, 1, -1); fins.maxSide = keep.finSide;
 check(broken().includes("Fins"), `fins with a 0.05 N limit snap off in 5 m/s wind (peak ${fins.peak.toFixed(2)} N)`);
-check(sim.cg < get("rocketCP()"), "without fins the center of pressure is above the center of gravity: unstable");
+{
+  fins.maxSide = 0.05; sel.motor = 1; sel.chute = -1; sandbox.resetAll(); sandbox.launch();       // stop the moment the fins come off
+  let n = 0; while (!fins.broken && n < 240 * 20) { sandbox.step(DT); n++; }
+  fins.maxSide = keep.finSide;
+  check(fins.broken && sim.cg < get("rocketCP()"), "without fins the center of pressure is above the center of gravity: unstable");
+}
 sel.wind = 0;
 fins.maxQ = 5000; fly(2, 1, -1); fins.maxQ = keep.finQ;
 check(broken().includes("Fins") && tele.events.some(e => e.label.indexOf("fluttered apart") >= 0), `E motor with a 5 kPa flutter limit: fins flutter apart (max Q ${(sim.maxQ / 1000).toFixed(1)} kPa)`);
@@ -246,6 +251,17 @@ key("Minus"); key("Minus"); check(get("cam.target") < z0, "- zooms out");
 listeners.wheel({ deltaY: -100, preventDefault() {} });
 check(get("cam.target") > z0 * 0.8, "mouse wheel up zooms in");
 sandbox.resetAll();
+{
+  let err = null;
+  try {
+    for (const px of [4, 10, 21, 23, 40, 110, 500]) { sandbox.resetAll(); get(`setZoomPx(${px})`); get("cam.zoom = cam.target"); frames(1); }
+  } catch (e) { err = e; }
+  sandbox.resetAll();
+  check(!err, err ? "drawing at some zoom failed: " + err.stack : "the rocket draws at every zoom from 4 to 500 px, arrow when tiny, markers too");
+  get("setZoomPx(10)"); get("cam.zoom = cam.target"); const before = JSON.stringify(drawCalls);
+  frames(1); check(JSON.stringify(drawCalls) !== before, "a tiny rocket is still drawn (as an arrow)");
+  sandbox.resetAll();
+}
 key("KeyZ"); check(Math.abs(get("cam.target") * get("CAM_REF_H") - 240) < 1e-6, "Z jumps to the close preset");
 frames(60); check(Math.abs(get("cam.zoom") - get("cam.target")) < 1e-6, "zoom eases to its target");
 for (let i = 0; i < 100; i++) key("Equal");
@@ -349,6 +365,230 @@ for (const t of get("TUBES")) for (const f of get("FIN_SHAPES")) for (const n of
 }
 console.log(`  info    builds under 1 caliber with the C motor: ${unstable.length} of ${get("TUBES").length * get("FIN_SHAPES").length * get("NOSES").length}${unstable.length ? "  e.g. " + unstable.slice(0, 4).join(", ") : ""}`);
 backToDefault(); sandbox.chooseMotor(1); sel.wind = 0; sandbox.resetAll();
+
+/* ---- 14. placement: fin position, nose weight, and flights that differ from each other ---- */
+console.log("\n14. Placement and variety");
+const calNow = () => get("rocketCal()");
+const resetBuild = () => { sandbox.resetAll(); backToDefault(); sandbox.chooseFinShift(0); sandbox.chooseBallast(0); sandbox.chooseMotor(1); sandbox.resetAll(); };
+resetBuild();
+const cal0 = calNow(), mass0 = sim.mass;
+sandbox.chooseFinShift(60);
+check(Math.abs(partNamed("Fins").shift - 0.06) < 1e-9 && Math.abs(partNamed("Fins").cpAt - (0.01 + 0.06)) < 1e-9, "fins 6 cm up the tube: their push point moves up 6 cm");
+check(calNow() < cal0, `fins higher up the tube: less stable (${cal0.toFixed(1)} -> ${calNow().toFixed(1)} cal)`);
+sandbox.chooseFinShift(-20);
+check(calNow() > cal0, `fins hanging off the back: more stable (${calNow().toFixed(1)} cal)`);
+check(partNamed("Fins").maxSide < 8, `fins hanging off the back are held on less well (limit ${partNamed("Fins").maxSide.toFixed(1)} N instead of 8)`);
+sandbox.chooseFinShift(500); check(buildNow.finMm === get("FIN_MM_MAX"), "fin position stops at the top of its range");
+sandbox.chooseFinShift(-500); check(buildNow.finMm === get("FIN_MM_MIN"), "fin position stops at the back of its range");
+sandbox.chooseFinShift(34); check(buildNow.finMm === 30, "fin position snaps to whole centimeters");
+sandbox.chooseFinShift(120);
+check(calNow() < 0, `fins 12 cm up the tube: unstable (${calNow().toFixed(1)} cal)`);
+sandbox.chooseBallast(30);
+check(calNow() > 1 && Math.abs(sim.mass - mass0 - 0.030) < 1e-9, `30 g of nose weight makes it stable again (${calNow().toFixed(1)} cal) and adds exactly 30 g`);
+const nw = partNamed("Nose weight"), noseP = partNamed("Nose cone");
+check(nw.at > noseP.at - noseP.length / 2 && nw.at < noseP.at + noseP.length / 2, "the nose weight sits inside the nose cone");
+sandbox.chooseBallast(7); check(buildNow.ballastG === 5, "nose weight snaps to 5 g steps");
+sandbox.chooseBallast(99); check(buildNow.ballastG === get("BALLAST_MAX_G"), "nose weight stops at its maximum");
+resetBuild();
+check(get("buildPrice")(Object.assign({}, buildNow), MOTORS[1]) < get("buildPrice")(Object.assign({}, buildNow, { ballastG: 30 }), MOTORS[1]), "nose weight costs a little");
+
+sandbox.chooseFinShift(120); sel.wind = 0; launchOpts.imperfect = false;
+fly(1, 1, 1);
+check(tele.hi[12] === 0 && sim.apogee > 390, "unstable, but perfectly aimed in still air with a perfect motor: nothing disturbs it, it balances on a knife edge");
+launchOpts.imperfect = true; sel.wind = 2;
+const wrong = [];
+for (const seed of [1, 2, 3]) {
+  launchOpts.seed = seed; fly(1, 1, 1);
+  wrong.push({ ap: sim.apogee, lean: Math.max(Math.abs(tele.lo[10]), Math.abs(tele.hi[10])) * 180 / Math.PI });
+}
+check(wrong.every(r => r.ap < 340 || r.lean > 45), `unstable with a real motor and 5 m/s wind: all 3 flights go wrong (apogee ${wrong.map(r => r.ap.toFixed(0)).join(", ")} m instead of ~400)`);
+launchOpts.imperfect = false; sel.wind = 0;
+sandbox.resetAll(); sandbox.chooseFinShift(0); sandbox.resetAll();
+
+/* variety: imperfections on gives each seed its own motor and gusts */
+launchOpts.imperfect = true;
+const seen = [];
+for (const seed of [1, 2, 3, 4, 5]) { launchOpts.seed = seed; fly(1, 1, 1); seen.push({ mis: sim.misalign, ts: sim.thrustScale, ga: sim.gustAmp, ap: sim.apogee, x: sim.x }); }
+check(seen.every(r => Math.abs(r.mis) <= get("THRUST_MISALIGN_DEG") * get("ADAPTER_MISALIGN_MULT") * Math.PI / 180 + 1e-12 && Math.abs(r.ts - 1) <= get("THRUST_VARY") + 1e-12 && r.ga >= get("GUST_AMP_MIN") && r.ga <= get("GUST_AMP_MAX")), "each flight's misalignment, motor strength and gust size stay inside their limits");
+check(new Set(seen.map(r => r.ap.toFixed(3))).size === 5 && new Set(seen.map(r => r.x.toFixed(2))).size === 5, `5 seeds, 5 different flights, even in calm air (apogee ${Math.min(...seen.map(r => r.ap)).toFixed(0)}-${Math.max(...seen.map(r => r.ap)).toFixed(0)} m, landing ${Math.min(...seen.map(r => r.x)).toFixed(0)} to ${Math.max(...seen.map(r => r.x)).toFixed(0)} m)`);
+{
+  const base = get("THRUST_MISALIGN_DEG") * Math.PI / 180, mult = get("ADAPTER_MISALIGN_MULT");
+  const worst = (tubeId) => { sandbox.resetAll(); sandbox.chooseBuild("tube", tubeId); let w = 0;
+    for (let seed = 1; seed <= 40; seed++) { launchOpts.seed = seed; sandbox.resetAll(); sandbox.launch(); w = Math.max(w, Math.abs(sim.misalign)); }
+    sandbox.resetAll(); return w; };
+  const wAdapter = worst("t24-thin"), wFit = worst("t18-thin");      // the C motor: adapter in 24 mm, snug in 18 mm
+  check(wFit <= base + 1e-12, `C motor snug in an 18 mm tube: misalignment stays within ${get("THRUST_MISALIGN_DEG")} deg`);
+  check(wAdapter > base && wAdapter <= base * mult + 1e-12, `C motor in an adapter in a 24 mm tube: looser, up to ${(wAdapter * 180 / Math.PI).toFixed(2)} deg (limit ${(get("THRUST_MISALIGN_DEG") * mult).toFixed(2)})`);
+  sandbox.chooseBuild("tube", "t24-thin"); sandbox.resetAll();
+}
+launchOpts.seed = 3; fly(1, 1, 1); const s3a = { ap: sim.apogee, x: sim.x }; fly(1, 1, 1);
+check(sim.apogee === s3a.ap && sim.x === s3a.x, "the same seed still repeats the same flight exactly");
+launchOpts.imperfect = false; fly(1, 1, 1);
+check(sim.misalign === 0 && sim.thrustScale === 1, "imperfections off: a perfect motor");
+
+/* dragging the fins with the mouse */
+resetBuild(); frames(2);
+const px = (xm, hm) => ({ clientX: get(`sx(${xm})`), clientY: get(`sy(${hm})`), target: canvas });
+listeners.mousedown(px(0.02, 0.02));
+listeners.mousemove(px(0.02, 0.071));
+listeners.mouseup({});
+check(buildNow.finMm === 50, `dragging the fins up 5 cm with the mouse moves them 5 cm (${buildNow.finMm} mm)`);
+listeners.mousemove(px(0.02, 0.2)); check(buildNow.finMm === 50, "the mouse does nothing once the button is released");
+listeners.mousedown(px(0.2, 0.05)); listeners.mousemove(px(0.2, 0.3)); listeners.mouseup({});
+check(buildNow.finMm === 50, "grabbing empty space does not move the fins");
+sandbox.chooseFinShift(0); sandbox.launch();
+listeners.mousedown(px(0.02, 0.02)); listeners.mousemove(px(0.02, 0.09)); listeners.mouseup({});
+check(buildNow.finMm === 0, "the fins cannot be dragged once the rocket is lit");
+resetBuild();
+
+/* every look still draws with the new parts */
+{
+  let err = null, n = 0;
+  try {
+    for (const mm of [-20, 0, 60, 120]) for (const g of [0, 30]) for (const f of get("FIN_SHAPES")) {
+      sandbox.resetAll(); sandbox.chooseFinShift(mm); sandbox.chooseBallast(g); sandbox.chooseBuild("fins", f.id); frames(1); n++;
+    }
+  } catch (e) { err = e; }
+  resetBuild();
+  check(!err && n === 32, err ? "drawing failed: " + err.stack : `${n} frames drawn with moved fins and nose weight`);
+}
+
+/* ---- 15. breaking: loose pieces, landing damage, tipping over, a folding tube ---- */
+console.log("\n15. Breaking apart");
+const names = () => get("rocket.parts").filter(p => p.broken).map(p => p.name);
+const debris = () => get("sim.debris");
+const settle = (secs) => { for (let i = 0; i < 240 * secs; i++) sandbox.step(DT); };
+resetBuild(); sel.wind = 0; launchOpts.imperfect = false;
+
+fly(0, 1, -1);                                    // A motor, no parachute: 32 m/s
+check(names().join() === "Fins,Nose cone" && sim.impact > 30 && sim.impact < 35, `A motor, no chute (${sim.impact.toFixed(0)} m/s): the fins and nose snap off, the tube holds (${names().join(", ")})`);
+check(debris().length === 5 && debris().map(d => d.kind).sort().join() === "fin,fin,fin,fin,nose", "each broken part becomes its own loose piece (every fin separately)");
+settle(10);
+check(debris().every(d => d.landed && d.y > 0 && d.y < 0.05), "the pieces fall and come to rest on the ground");
+check(Math.abs(Math.abs(sim.rest.theta) - Math.PI / 2) < 1e-9 && sim.rest.lying, "the rocket tips over and lies on its side after landing");
+check(sim.landed && sandbox.flightState() === "LANDED" && Number.isFinite(sim.rest.x), "the flight still counts as landed while it settles");
+const restX = sim.rest.x; settle(3); check(sim.rest.x === restX, "once it lies flat it stays put");
+
+fly(1, 1, -1);                                    // C motor, no parachute: 58 m/s
+check(names().includes("Body tube") && names().includes("Fins") && names().includes("Nose cone"), `C motor, no chute (${sim.impact.toFixed(0)} m/s): the tube crumples too (${names().join(", ")})`);
+sandbox.chooseBuild; resetBuild(); sandbox.chooseBuild("tube", "t24-thick"); fly(1, 1, -1);
+check(!names().includes("Body tube") && names().includes("Fins"), "a thick-walled tube survives the same landing that crumples a thin one");
+resetBuild();
+
+fly(1, 1, 1);                                     // gentle landing
+check(names().length === 0 && debris().length === 0, `C motor, M chute (${sim.impact.toFixed(1)} m/s): nothing breaks, no loose pieces`);
+settle(5);
+check(sim.rest.lying && Math.abs(Math.abs(sim.rest.theta) - Math.PI / 2) < 1e-9, "a gentle landing still tips over and lies down");
+check(Math.cos(sim.theta) > 0.7, "the flight's own landing tilt is untouched by the tipping over (it is kept separately)");
+
+sel.wind = 2; launchOpts.imperfect = true; launchOpts.seed = 9;                   // the same seed repeats the same breakage
+fly(1, 1, -1); const d1 = debris().map(d => [d.kind, d.x.toFixed(4), d.y.toFixed(4), d.theta.toFixed(3)].join());
+settle(10); const d1b = debris().map(d => [d.kind, d.x.toFixed(4), d.theta.toFixed(3)].join());
+fly(1, 1, -1); settle(10); const d2b = debris().map(d => [d.kind, d.x.toFixed(4), d.theta.toFixed(3)].join());
+check(d1b.join("|") === d2b.join("|") && d1b.length >= 2, "same seed: the pieces scatter and land in exactly the same places");
+launchOpts.imperfect = false; sel.wind = 0;
+
+/* the chute canopy comes loose when the cord snaps, and drifts down slowly */
+fly(2, 0, 1);
+const canopy = debris().find(d => d.kind === "chute");
+check(names().includes("Parachute") && canopy !== undefined, "E motor, 3 s delay: the cord snaps and the canopy flies off as a loose piece");
+
+/* a tube that folds in flight takes everything above it along */
+resetBuild(); sel.wind = 2; launchOpts.imperfect = true; launchOpts.seed = 4;
+partNamed("Body tube").maxBend = 0.02;
+fly(1, 1, 1);
+check(names().includes("Body tube") && names().includes("Nose cone") && names().includes("Parachute"), `a tube with a 0.02 N*m limit folds in 5 m/s wind and the nose and chute go with it (${names().join(", ")})`);
+check(tele.events.some(e => e.label.indexOf("folded in half") >= 0) && debris().length >= 2 && Number.isFinite(sim.apogee) && sandbox.flightState() === "LANDED", "the folded rocket still flies on to a landing, with pieces falling separately");
+check(sim.mass < 0.1, `the rest of the rocket is lighter (${(sim.mass * 1000).toFixed(0)} g)`);
+launchOpts.imperfect = false; sel.wind = 0; resetBuild();
+check(partNamed("Body tube").maxBend === 1.5 && partNamed("Body tube").broken === false, "a fresh reset brings back an unbroken tube with its real limit");
+sel.wind = 4; launchOpts.imperfect = true; launchOpts.seed = 2; fly(2, 1, 1);
+check(!partNamed("Body tube").broken && partNamed("Body tube").peak > 0 && partNamed("Body tube").peak < 1.5 / 3, `an E flight in 8 m/s wind loads the tube to only ${(partNamed("Body tube").peak / 1.5 * 100).toFixed(0)}% of its bending limit`);
+launchOpts.imperfect = false; sel.wind = 0;
+
+/* the real frame loop and the drawing, through a crash, the tipping over and the loose pieces */
+{
+  let err = null;
+  try {
+    sandbox.resetAll(); sandbox.chooseRecovery("none"); sandbox.chooseMotor(1); key("Space");
+    frames(60 * 40); frames(120);
+    check(sim.landed && debris().length >= 3 && sandbox.flightState() === "LANDED", "real frame loop: a no-chute C flight crashes, scatters pieces and settles");
+    get("setZoomPx(10)"); get("cam.zoom = cam.target"); frames(2); get("setZoomPx(110)"); get("cam.zoom = cam.target"); frames(2);
+    sandbox.resetAll(); sandbox.chooseRecovery("M"); key("Space"); frames(60 * 40); frames(120);
+  } catch (e) { err = e; }
+  sandbox.resetAll(); backToDefault(); sandbox.chooseMotor(1);
+  check(!err, err ? "drawing failed: " + err.stack : "the crash, the pieces, the tipped rocket and the collapsed canopy all draw without errors");
+  check(debris().length === 0 && !sim.landed, "reset clears the pieces and the landing");
+}
+
+/* ---- 16. breaking, part two: single fins, veering, zippering, effects ---- */
+console.log("\n16. Fins one at a time, zippering, effects");
+resetBuild(); sel.wind = 0; launchOpts.imperfect = false;
+{
+  const f = partNamed("Fins"), calBefore = calNow(), massBefore = get("rocketMass()");
+  check(f.fins.length === 4 && f.alive === 1, "the fins are four separate fins, all on");
+  get("applyLandingDamage(13.2)");                  // a hard landing: only the weakest fins let go
+  check(f.fins[0].gone && f.fins[1].gone && !f.fins[2].gone && !f.fins[3].gone && f.alive === 0.5 && !f.broken, "a 13 m/s landing snaps the two weakest fins and the other two hold");
+  check(debris().length === 2 && debris().every(d => d.kind === "fin"), "each lost fin is its own loose piece");
+  check(Math.abs((massBefore - get("rocketMass()")) - f.mass / 2) < 1e-12, "half the fins gone: half the fin weight gone");
+  check(calNow() < calBefore, `fewer fins, less stable (${calBefore.toFixed(1)} -> ${calNow().toFixed(1)} cal)`);
+  resetBuild();
+  check(partNamed("Fins").alive === 1 && partNamed("Fins").fins.every(x => !x.gone), "reset puts all four fins back");
+}
+
+/* a fin lost in flight makes the rocket veer; the control flight stays dead straight */
+const flyLosingFin = (lose) => {
+  sandbox.resetAll(); sandbox.launch(); let n = 0, done = false;
+  while (sandbox.flightState() !== "LANDED" && n < 240 * 400) { if (lose && !done && sim.t >= 1.0) { get("breakFin(finsPart, 'snapped off')"); done = true; } sandbox.step(DT); n++; }
+  return { x: sim.x, apogee: sim.apogee };
+};
+resetBuild();
+const straight = flyLosingFin(false), veer = flyLosingFin(true);
+check(straight.x === 0 && Math.abs(veer.x) > 5 && Number.isFinite(veer.x), `losing one fin at T+1 s: the rocket veers ${Math.abs(veer.x).toFixed(0)} m off line (the intact one lands at ${straight.x})`);
+check(veer.apogee !== straight.apogee && Math.abs(veer.apogee - straight.apogee) < 60, `and the climb changes a little (${veer.apogee.toFixed(0)} m instead of ${straight.apogee.toFixed(0)} m)`);
+
+/* in flight the fins come off one by one, weakest first */
+resetBuild(); sel.wind = 2;
+partNamed("Fins").maxSide = 0.05; fly(1, 1, 1);
+const finEvents = tele.events.map(e => e.label).filter(l => l.indexOf("Fins snapped off") === 0);
+resetBuild(); sel.wind = 0;
+check(finEvents.length === 4 && finEvents[0].indexOf("3 of 4 left") > 0 && finEvents[3].indexOf("0 of 4 left") > 0, `fins snapped off one at a time: ${finEvents.map(l => l.slice(-12)).join(" | ")}`);
+sandbox.resetAll();
+check(tele.events.length === 0, "(the flight log was cleared)");
+
+/* zippering: a fast deployment tears a thin tube; a thick one holds */
+resetBuild(); fly(2, 0, 1);                                         // E motor, 3 s delay: opens at 75 m/s
+check(tele.events.some(e => e.label.indexOf("zippered by the chute") >= 0) && names().includes("Body tube") && names().includes("Nose cone"), `E motor, 3 s delay, thin tube: the chute zippers the tube (${names().join(", ")})`);
+check(debris().some(d => d.kind === "chute") && debris().some(d => d.kind === "tube"), "the tube, the nose and the canopy all come away as loose pieces");
+sandbox.resetAll(); sandbox.chooseBuild("tube", "t24-thick"); fly(2, 1, 1);                    // E motor, 5 s delay, thick tube
+check(names().length === 0 && sim.impact < 8, `E motor, 5 s delay, thick tube: the same kind of deployment holds (${sim.impact.toFixed(1)} m/s, nothing broken)`);
+resetBuild(); fly(1, 0, 1);
+check(names().length === 0, "C motor, 3 s delay, thin tube: gentle enough, nothing breaks");
+resetBuild();
+
+/* pieces bounce and skid before they stop */
+launchOpts.imperfect = false; sel.wind = 0; fly(1, 1, -1); settle(10);
+check(debris().reduce((n, d) => n + d.bounces, 0) >= 1 && debris().every(d => d.landed), `the pieces bounce (${debris().reduce((n, d) => n + d.bounces, 0)} bounces) and then lie still`);
+resetBuild();
+
+/* effects: sparks, smoke, dust and shake appear at a crash and are gone after a reset */
+{
+  let err = null;
+  try {
+    sandbox.resetAll(); sandbox.chooseRecovery("none"); sandbox.chooseMotor(1); key("Space");
+    let n = 0; while (sandbox.flightState() !== "LANDED" && n < 60 * 60) { frames(1); n++; }
+    frames(1);
+    check(get("fx.chips.length") > 0 && get("fx.puffs.length") > 0 && get("fx.labels.length") > 0, `a crash throws chips (${get("fx.chips.length")}), dust/smoke (${get("fx.puffs.length")}) and callouts (${get("fx.labels.length")})`);
+    check(get("fx.shake") > 0, `and shakes the picture (${get("fx.shake").toFixed(1)} px)`);
+    check(get("fx.labels").some(l => /SNAPPED|CRACKED|CRUMPLED|FOLDED/.test(l.text)), `callouts say what broke ("${get("fx.labels")[0].text}")`);
+    frames(60 * 6);
+    check(get("fx.chips.length") === 0 && get("fx.labels.length") === 0 && get("fx.shake") === 0, "the effects die away on their own");
+  } catch (e) { err = e; }
+  sandbox.resetAll();
+  check(!err, err ? "effects failed: " + err.stack : "effects draw without errors");
+  check(get("fx.chips.length") === 0 && get("fx.puffs.length") === 0 && get("sim.fx.length") === 0, "reset clears every effect");
+  backToDefault(); sandbox.chooseMotor(1);
+}
 
 console.log("\n" + (failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"));
 process.exit(failures === 0 ? 0 : 1);

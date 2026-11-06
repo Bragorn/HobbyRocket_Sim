@@ -23,13 +23,14 @@ const MOTOR_PRICE = { A: 1.5, C: 3.0, E: 6.5 };   // per flight (single-use)
 const ADAPTER_PRICE = 1.0;                        // 18 mm motor in a 24 mm tube
 const TUBE_LENGTH = 0.30;                         // fixed for now
 
-/* ---- tubes: size x wall. crushN = thrust it takes before crumpling,
-        bendNm = sideways bending moment it takes (both: tune, not used yet) ---- */
+/* ---- tubes: size x wall. crushN = thrust it takes before crumpling (not used yet), bendNm = sideways
+        bending moment it takes before folding, zipN = pull from the parachute it takes before the tube
+        zippers (all: tune). A cord is stronger than a thin tube, so a fast deployment tears the tube first ---- */
 const TUBES = [
-  { id: "t24-thin",  name: "24 mm tube, thin wall",  diameter: 0.025, motorMm: 24, mass: 0.030, cdA: 0.8e-4, crushN: 35, bendNm: 1.5, price: 2.0, color: "#ecf0f1" },
-  { id: "t24-thick", name: "24 mm tube, thick wall", diameter: 0.025, motorMm: 24, mass: 0.045, cdA: 0.8e-4, crushN: 90, bendNm: 3.5, price: 4.0, color: "#c4ced4" },
-  { id: "t18-thin",  name: "18 mm tube, thin wall",  diameter: 0.019, motorMm: 18, mass: 0.020, cdA: 0.5e-4, crushN: 20, bendNm: 0.6, price: 1.5, color: "#f4d9a0" },
-  { id: "t18-thick", name: "18 mm tube, thick wall", diameter: 0.019, motorMm: 18, mass: 0.030, cdA: 0.5e-4, crushN: 50, bendNm: 1.4, price: 3.0, color: "#d9a95a" }
+  { id: "t24-thin",  name: "24 mm tube, thin wall",  diameter: 0.025, motorMm: 24, mass: 0.030, cdA: 0.8e-4, crushN: 35, bendNm: 1.5, zipN: 16, price: 2.0, color: "#ecf0f1" },
+  { id: "t24-thick", name: "24 mm tube, thick wall", diameter: 0.025, motorMm: 24, mass: 0.045, cdA: 0.8e-4, crushN: 90, bendNm: 3.5, zipN: 30, price: 4.0, color: "#c4ced4" },
+  { id: "t18-thin",  name: "18 mm tube, thin wall",  diameter: 0.019, motorMm: 18, mass: 0.020, cdA: 0.5e-4, crushN: 20, bendNm: 0.6, zipN: 12, price: 1.5, color: "#f4d9a0" },
+  { id: "t18-thick", name: "18 mm tube, thick wall", diameter: 0.019, motorMm: 18, mass: 0.030, cdA: 0.5e-4, crushN: 50, bendNm: 1.4, zipN: 20, price: 3.0, color: "#d9a95a" }
 ];
 
 /* ---- fins: shape x material. cpAt = height of the fins' sideways push above the rocket's
@@ -48,9 +49,9 @@ const FIN_MATERIALS = [
 
 /* ---- nose cones ---- */
 const NOSES = [
-  { id: "conical", name: "Conical", length: 0.080, mass: 0.010, cdA: 1.0e-4, cn: 2.0, maxSide: 6, price: 1.0 },
-  { id: "ogive",   name: "Ogive",   length: 0.090, mass: 0.012, cdA: 0.8e-4, cn: 2.0, maxSide: 6, price: 2.0 },
-  { id: "blunt",   name: "Blunt",   length: 0.050, mass: 0.008, cdA: 1.6e-4, cn: 1.8, maxSide: 7, price: 0.8 }
+  { id: "conical", name: "Conical", length: 0.080, mass: 0.010, cdA: 1.0e-4, cn: 2.0, maxSide: 6, maxImpact: 24, price: 1.0 },
+  { id: "ogive",   name: "Ogive",   length: 0.090, mass: 0.012, cdA: 0.8e-4, cn: 2.0, maxSide: 6, maxImpact: 22, price: 2.0 },
+  { id: "blunt",   name: "Blunt",   length: 0.050, mass: 0.008, cdA: 1.6e-4, cn: 1.8, maxSide: 7, maxImpact: 28, price: 0.8 }
 ];
 
 /* ---- recovery. chuteIdx = which entry of CHUTES (data.js) it uses (-1 = none): that is
@@ -65,7 +66,8 @@ const RECOVERY = [
 ];
 
 /* today's rocket */
-const DEFAULT_BUILD = { tube: "t24-thin", fins: "trapezoid", finMat: "balsa", nose: "conical", recovery: "M" };
+/* finMm = how far up the tube the fins are glued (mm, negative = overhanging the back); ballastG = grams of weight in the nose */
+const DEFAULT_BUILD = { tube: "t24-thin", fins: "trapezoid", finMat: "balsa", nose: "conical", recovery: "M", finMm: 0, ballastG: 0 };
 
 /* The rocket being built. The sidebar changes this (through chooseBuild below).
    build.recovery is kept in step with sel.chute by applyBuild(); sel.chute is the one that counts. */
@@ -86,6 +88,7 @@ function buildPrice(b, motor) {                   // what one rocket costs to bu
   const mat = catalogPick(FIN_MATERIALS, b.finMat), nose = catalogPick(NOSES, b.nose);
   let total = tube.price + shape.price * mat.priceMul + nose.price + catalogPick(RECOVERY, b.recovery).price + MOTOR_PRICE[motor.name];
   if (motorFit(tube, motor) === "adapter") total += ADAPTER_PRICE;
+  total += (b.ballastG || 0) / BALLAST_STEP_G * 0.1;     // nose weight: 10 cents a step
   return total;
 }
 
@@ -94,16 +97,23 @@ function buildParts(b) {
   const tube = catalogPick(TUBES, b.tube), shape = catalogPick(FIN_SHAPES, b.fins);
   const mat = catalogPick(FIN_MATERIALS, b.finMat), nose = catalogPick(NOSES, b.nose);
   const rec = catalogPick(RECOVERY, b.recovery), d = tube.diameter;
+  const shift = (b.finMm || 0) / 1000;               // fins slid up the tube (m)
+  const overhang = shift < 0 ? Math.max(0.5, 1 + shift * 10) : 1;   // fins hanging off the back are held on less well
   const parts = [
     { name: "Fins", kind: "fins", length: shape.length, width: d, span: shape.span, mass: shape.mass * mat.mass, cdA: shape.cdA,
-      cn: shape.cn, cpAt: shape.cpAt, maxSide: shape.maxSide * mat.strength, maxQ: 30000 * shape.stiff * mat.strength, color: mat.color, shape: shape.id },
+      cn: shape.cn, cpAt: shape.cpAt + shift, maxSide: shape.maxSide * mat.strength * overhang, maxQ: 30000 * shape.stiff * mat.strength, color: mat.color, shape: shape.id, shift: shift,
+      maxImpact: 13 * Math.sqrt(mat.strength),       // landing speed (m/s) that snaps the weakest fin off
+      count: 4, alive: 1,                            // four fins, each one can break on its own. alive = fraction still on
+      fins: [{ gone: false, v: 0.92 }, { gone: false, v: 1.0 }, { gone: false, v: 1.07 }, { gone: false, v: 1.14 }] },   // v = how strong each is, compared with the limit
     { name: "Body tube", kind: "tube", length: TUBE_LENGTH, width: d, mass: tube.mass, cdA: tube.cdA,
-      crushN: tube.crushN, bendNm: tube.bendNm, color: tube.color },
+      crushN: tube.crushN, bendNm: tube.bendNm, color: tube.color,
+      maxBend: tube.bendNm, maxZip: tube.zipN, maxImpact: 25 + tube.crushN * 0.5 },   // folds above maxBend (N*m); crumples above maxImpact (m/s)
     { name: "Nose cone", kind: "nose", length: nose.length, width: d, mass: nose.mass, cdA: nose.cdA,
-      cn: nose.cn, cpAt: shape.length + TUBE_LENGTH + nose.length * 0.5, maxSide: nose.maxSide, color: "#e67e22", shape: nose.id },
+      cn: nose.cn, cpAt: shape.length + TUBE_LENGTH + nose.length * 0.5, maxSide: nose.maxSide, maxImpact: nose.maxImpact, color: "#e67e22", shape: nose.id },
     { name: "Motor", kind: "motor", length: 0.07, width: 0.018, mass: 0, cdA: 0, at: 0.035, color: "#34495e", inside: true },
     { name: "Parachute", kind: "chute", length: 0, width: 0, mass: 0, cdA: 0, at: 0.30, maxPull: rec.cordN, color: "#f5c542", inside: true,
-      attach: shape.length + TUBE_LENGTH }          // the shock cord ties on at the base of the nose cone
+      attach: shape.length + TUBE_LENGTH },         // the shock cord ties on at the base of the nose cone
+    { name: "Nose weight", kind: "ballast", length: 0, width: 0, mass: (b.ballastG || 0) / 1000, cdA: 0, at: 0, color: "#5a6269", inside: true }
   ];
   let up = 0;
   for (let i = 0; i < parts.length; i++) {
@@ -111,6 +121,8 @@ function buildParts(b) {
     p.broken = false; p.peak = 0;
     if (!p.inside) { p.at = up + p.length / 2; up += p.length; }
   }
+  parts[0].at += shift;                             // the fins' own weight moves with them
+  parts[5].at = parts[2].at - nose.length * 0.25;   // the nose weight sits low in the nose cone
   return parts;
 }
 
@@ -160,6 +172,22 @@ function chooseAngle(i) {
   if (sim.ignited || ANGLES[i] === undefined) return;
   sel.angle = i;
   refreshLoadout();                               // the rod tilt shows on the pad straight away
+}
+
+function chooseFinShift(mm) {                     // fin position in mm, snapped to whole centimeters
+  if (sim.ignited) return;
+  mm = Math.max(FIN_MM_MIN, Math.min(FIN_MM_MAX, Math.round(mm / 10) * 10));
+  if (mm === build.finMm) return;
+  build.finMm = mm;
+  applyLoadout();
+}
+
+function chooseBallast(g) {                       // grams of weight in the nose, in steps
+  if (sim.ignited) return;
+  g = Math.max(0, Math.min(BALLAST_MAX_G, Math.round(g / BALLAST_STEP_G) * BALLAST_STEP_G));
+  if (g === build.ballastG) return;
+  build.ballastG = g;
+  applyLoadout();
 }
 
 function launchBlocked() {                        // "" when it can launch, otherwise the reason why not

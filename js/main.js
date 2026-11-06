@@ -15,6 +15,7 @@ let warp = 1;
 function resetAll() {
   resetSim();
   resetCamera();
+  fxClear();
 }
 
 /* Call after the build, the motor or the chute choice changes (catalog.js does).

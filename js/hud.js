@@ -44,9 +44,11 @@ function rebuildText() {
   ];
 
   for (let i = 0; i < rocket.parts.length; i++) {
-    const p = rocket.parts[i], lim = p.maxSide || p.maxPull;
-    if (lim) hudLines.push((p.name + "          ").slice(0, 10) + " " + p.peak.toFixed(1) + " / " + lim + " N" + (p.broken ? "  BROKEN" : ""));
+    const p = rocket.parts[i], lim = p.maxSide || p.maxPull || p.maxBend;
+    if (lim) hudLines.push((p.name + "          ").slice(0, 10) + " " + p.peak.toFixed(p.maxBend ? 2 : 1) + " / " + lim + (p.maxBend ? " N*m" : " N") + (p.broken ? "  BROKEN" : ""));
   }
+
+  if (finsPart && finsPart.fins) hudLines.push("Fins left  " + Math.round(finsPart.alive * finsPart.fins.length) + " of " + finsPart.fins.length);
 
   if (state === "LANDED") {
     hudLines.push("Impact     " + sim.impact.toFixed(1) + " m/s");
@@ -267,6 +269,6 @@ function drawHud(dtFrame) {
   ctx.font = "12px monospace";
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
-  ctx.fillText("Space: launch  R: reset  Z / + / - / wheel: zoom   (rocket parts: sidebar)", 12, Hc - 26);
+  ctx.fillText("Space: launch  R: reset  Z / + / - / wheel: zoom   (parts: sidebar; drag the fins)", 12, Hc - 26);
   ctx.fillText("W: wind speed  Q: wind direction  A: launch angle  G: graphs  M: CG/CP  E: export  D: debug  H: sharp  T: time warp", 12, Hc - 10);
 }
