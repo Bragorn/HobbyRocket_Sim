@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Step 4: readouts and map view</title>
+<style>
+  body { margin: 0; background: #101418; color: #e8eef2; font: 13px/1.4 monospace; padding: 8px 12px; overflow: hidden; }
+  canvas { display: block; margin: 6px 0; border: 1px solid rgba(255,255,255,0.15); }
+  pre { white-space: pre-wrap; margin: 0; max-height: 120px; overflow: hidden; }
+</style>
+</head>
+<body>
+<div><b>Step 4.</b> W/S throttle, Z full, X cut, A/D steer, T damping, R reset, M map view, + / - / wheel zoom</div>
+<canvas id="view"></canvas>
+<pre id="log"></pre>
+
+<script src="js/planck.min.js"></script>
+<script>
+"use strict";
+
+const logEl = document.getElementById("log");
+const logLines = [];
+function log(s) { logLines.push(s); if (logLines.length > 7) logLines.shift(); logEl.textContent = logLines.join("\n"); }
+
+if (typeof planck === "undefined") {
+  log("planck was not found. Check that the file is at js/planck.min.js next to this page. Then reload.");
+  throw new Error("planck missing");
+}
+
+/* ---------- the numbers you can tune ---------- */
+const R = 600000;                    // planet radius, m
+const G0 = 9.81;                     // surface gravity, m/s2
+const MU = G0 * R * R;               // gravity strength: force = m * MU / r^2
+const DT = 1 / 60;                   // physics step, s
+const VEL_IT = 16, POS_IT = 6;       // solver effort per step
+
+const MAX_THRUST = 50000;            // N at full throttle
+const MIN_THROTTLE = 0.2;            // the lowest the engine can run once it is lit (fraction of max thrust)
+const ISP = 300;                     // seconds. Fuel burned per second = thrust / (ISP * 9.81)
+const GIMBAL_MAX = 6 * Math.PI / 180;// how far the engine can swivel, radians
+const GIMBAL_RATE = 1.0;             // how fast it swivels, rad/s
+const WHEEL_MAX = 6000;              // reaction wheel torque, N*m
+const DAMP_K = 4000;                 // how hard "rotation damping" fights spin (N*m per rad/s)
+const TANK_DRY = 400, FUEL_FULL = 1600, TANK_AREA = 8;   // kg, kg, m2 (tank is 2 m x 4 m)
+const REF_OFFSET = 3.3;              // height of the tank's centre when the rocket stands on its legs. Altitudes
+                                     // are shown minus this, so the pad reads 0
+
+const P = (x, y) => new planck.Vec2(x, y);
+
+try {                                // the engine's built-in speed cap (see step 1)
+  planck.Settings.maxTranslation = 1000;
+  planck.Settings.maxTranslationSquared = 1e6;
+} catch (e) { log("could not raise the speed cap: " + e.message); }
+
+function addGravity(world) {         // pull every dynamic body toward the planet's center (0, 0)
+  for (let b = world.getBodyList(); b; b = b.getNext()) {
+    if (!b.isDynamic()) continue;
+    const p = b.getPosition(), r = Math.hypot(p.x, p.y), k = -b.getMass() * MU / (r * r * r);
+    b.applyForceToCenter(P(p.x * k, p.y * k), true);
+  }
+}
+
+function polyArea(v) {
+  let a = 0;
+  for (let i = 0; i < v.length; i++) { const p = v[i], q = v[(i + 1) % v.length]; a += p.x * q.y - q.x * p.y; }
+  return Math.abs(a) / 2;
+}
+
+function bar(end, th) {              // a thin straight bar from (0,0) to end, th thick
+  const L = Math.hypot(end.x, end.y), nx = -end.y / L * th / 2, ny = end.x / L * th / 2;
+  return [P(nx, ny), P(end.x + nx, end.y + ny), P(end.x - nx, end.y - ny), P(-nx, -ny)];
+}
+
+/* ---------- build the rocket on the pad ---------- */
+let st = null;                       // everything about the current flight
+
+function buildRocket() {
+  const world = new planck.World({ gravity: P(0, 0) });
+  const ground = world.createBody({ type: "static", position: P(0, 0) });
+  ground.createFixture({ shape: new planck.Circle(R), friction: 0.8 });
+
+  const parts = [], joints = [];
+  const base = R + 0.5 + 0.02;        // the engine's bottom. The feet hang 0.5 m lower and start 2 cm off the ground
+
+  function add(name, color, x, y, verts, mass) {
+    const b = world.createBody({ type: "dynamic", position: P(x, y) });
+    b.createFixture({ shape: new planck.Polygon(verts), density: mass / polyArea(verts), friction: 0.8, restitution: 0 });
+    parts.push({ name: name, color: color, body: b, verts: verts });
+    return b;
+  }
+  function link(name, a, b, x, y) {
+    const j = world.createJoint(new planck.WeldJoint({ frequencyHz: 0, dampingRatio: 0 }, a, b, P(x, y)));
+    joints.push({ name: name, j: j, force: 0, peak: 0 });
+  }
+
+  const engine = add("engine", "#7f8c8d", 0, base + 0.4, [P(-0.5, -0.4), P(0.5, -0.4), P(0.6, 0.4), P(-0.6, 0.4)], 300);
+  const tank   = add("tank",   "#ecf0f1", 0, base + 2.8, [P(-1, -2), P(1, -2), P(1, 2), P(-1, 2)], TANK_DRY + FUEL_FULL);
+  const nose   = add("nose",   "#e67e22", 0, base + 5.55, [P(-1, -0.75), P(1, -0.75), P(0.2, 0.75), P(-0.2, 0.75)], 150);
+  const legL   = add("left leg",  "#95a5a6", -1, base + 1.2, bar(P(-1.5, -1.7), 0.2), 50);
+  const legR   = add("right leg", "#95a5a6",  1, base + 1.2, bar(P( 1.5, -1.7), 0.2), 50);
+
+  link("engine", tank, engine, 0, base + 0.8);
+  link("nose",   tank, nose,   0, base + 4.8);
+  link("left leg",  tank, legL, -1, base + 1.2);
+  link("right leg", tank, legR,  1, base + 1.2);
+
+  st = { world: world, ground: ground, parts: parts, joints: joints, engine: engine, tank: tank,
+         tankFixture: tank.getFixtureList(), throttle: 0, gimbal: 0, thrust: 0, fuel: FUEL_FULL, steer: 0,
+         damping: true, airborne: false, t: 0, emptyLogged: false };
+
+  world.on("begin-contact", function (ct) {          // the first touch after being in the air gets reported
+    const A = ct.getFixtureA().getBody(), B = ct.getFixtureB().getBody();
+    if (A !== ground && B !== ground) return;
+    if (!st.airborne) return;
+    st.airborne = false;
+    const body = A === ground ? B : A, p = body.getPosition(), r = Math.hypot(p.x, p.y);
+    const ux = p.x / r, uy = p.y / r, v = body.getLinearVelocity();
+    const vert = v.x * ux + v.y * uy, side = v.x * uy - v.y * ux;
+    const who = (parts.find(function (q) { return q.body === body; }) || { name: "?" }).name;
+    log("T+" + st.t.toFixed(1) + " s: touchdown, " + who + " first, " + Math.abs(vert).toFixed(1) + " m/s down, " + Math.abs(side).toFixed(1) + " m/s sideways");
+  });
+  log("new rocket on the pad. Throttle starts at 0: press W to light the engine.");
+}
+
+/* ---------- keys and zoom ---------- */
+const keys = {};
+let S = 9;                           // flight view zoom, pixels per meter
+let mapMode = false, mapS = 1e-4;    // M: the whole-planet view and its zoom
+
+function zoomBy(f) {
+  if (mapMode) mapS = Math.min(1e-2, Math.max(1e-6, mapS * f));
+  else S = Math.min(60, Math.max(0.2, S * f));
+}
+
+window.addEventListener("keydown", function (e) {
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) >= 0) e.preventDefault();
+  keys[e.code] = true;
+  if (e.code === "Equal" || e.code === "NumpadAdd") zoomBy(1.15);
+  if (e.code === "Minus" || e.code === "NumpadSubtract") zoomBy(1 / 1.15);
+  if (e.repeat) return;
+  if (e.code === "KeyR") buildRocket();
+  else if (e.code === "KeyZ") st.throttle = 1;
+  else if (e.code === "KeyX") st.throttle = 0;
+  else if (e.code === "KeyT") st.damping = !st.damping;
+  else if (e.code === "KeyM") toggleMap();
+});
+window.addEventListener("keyup", function (e) { keys[e.code] = false; });
+window.addEventListener("wheel", function (e) { e.preventDefault(); zoomBy(e.deltaY < 0 ? 1.2 : 1 / 1.2); }, { passive: false });
+
+/* ---------- one physics step ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function stepSim() {
+  const w = st.world;
+  addGravity(w);
+
+  // controls
+  if (keys.KeyW) st.throttle = Math.min(1, st.throttle + 0.5 * DT);
+  if (keys.KeyS) st.throttle = Math.max(0, st.throttle - 0.5 * DT);
+  st.steer = (keys.KeyA ? 1 : 0) - (keys.KeyD ? 1 : 0);       // +1 turns the rocket counter-clockwise (nose to the left)
+
+  // engine: a force on the engine part, at its nozzle, along its axis tilted by the gimbal angle
+  let thrust = 0;
+  if (st.throttle > 0 && st.fuel > 0) {
+    thrust = MAX_THRUST * (MIN_THROTTLE + (1 - MIN_THROTTLE) * st.throttle);
+    st.fuel = Math.max(0, st.fuel - thrust / (ISP * G0) * DT);
+    st.tankFixture.setDensity((TANK_DRY + st.fuel) / TANK_AREA);   // a lighter tank as the fuel burns
+    st.tank.resetMassData();
+    if (st.fuel === 0 && !st.emptyLogged) { st.emptyLogged = true; log("T+" + st.t.toFixed(1) + " s: out of fuel"); thrust = 0; }
+  }
+  st.thrust = thrust;
+  const target = -st.steer * GIMBAL_MAX;                         // swivel the engine so the thrust turns the rocket the way you steer
+  st.gimbal += clamp(target - st.gimbal, -GIMBAL_RATE * DT, GIMBAL_RATE * DT);
+  if (thrust > 0) {
+    const a = st.engine.getAngle() + st.gimbal;
+    st.engine.applyForce(P(-Math.sin(a) * thrust, Math.cos(a) * thrust), st.engine.getWorldPoint(P(0, -0.4)), true);
+  }
+
+  // reaction wheel, with optional damping of any spin
+  let tq = st.steer * WHEEL_MAX;
+  if (st.damping) tq -= DAMP_K * st.tank.getAngularVelocity();
+  st.tank.applyTorque(clamp(tq, -WHEEL_MAX, WHEEL_MAX), true);
+
+  w.step(DT, VEL_IT, POS_IT);
+  st.t += DT;
+
+  const inv = 1 / DT;                                            // joint loads are tracked for later (not shown right now)
+  for (const j of st.joints) {
+    const f = j.j.getReactionForce(inv);
+    j.force = Math.hypot(f.x, f.y);
+    if (j.force > j.peak) j.peak = j.force;
+  }
+  const p = st.tank.getPosition();
+  if (Math.hypot(p.x, p.y) - R > 5.5) st.airborne = true;
+}
+
+/* ---------- orbit numbers ---------- */
+/* From the tank's position and velocity (measured from the planet's center) work out the path it is on if
+   nothing pushes it any more: how high and low it goes, and how long one lap takes. */
+function orbitInfo(p, v) {
+  const r = Math.hypot(p.x, p.y), v2 = v.x * v.x + v.y * v.y, rv = p.x * v.x + p.y * v.y;
+  const k = v2 - MU / r;
+  let ex = (k * p.x - rv * v.x) / MU, ey = (k * p.y - rv * v.y) / MU;
+  const e = Math.hypot(ex, ey), energy = v2 / 2 - MU / r, h = p.x * v.y - p.y * v.x;
+  const bound = energy < 0, pLat = h * h / MU;
+  if (e < 1e-9) { ex = p.x / r; ey = p.y / r; } else { ex /= e; ey /= e; }   // direction of the lowest point
+  const a = bound ? -MU / (2 * energy) : Infinity;
+  return { r: r, e: e, ex: ex, ey: ey, dir: h >= 0 ? 1 : -1, bound: bound, pLat: pLat,
+           rp: pLat / (1 + e), ra: bound ? pLat / (1 - e) : Infinity,
+           period: bound ? 2 * Math.PI * Math.sqrt(a * a * a / MU) : null };
+}
+
+function fmtAlt(m) {
+  if (!isFinite(m)) return "escape";
+  return Math.abs(m) < 10000 ? m.toFixed(0) + " m" : (m / 1000).toFixed(1) + " km";
+}
+function fmtTime(s) {
+  if (s === null) return "-";
+  return s < 120 ? s.toFixed(0) + " s" : Math.floor(s / 60) + " min " + Math.round(s % 60) + " s";
+}
+
+/* ---------- drawing ---------- */
+const cv = document.getElementById("view"), c = cv.getContext("2d");
+let W = 0, Hh = 0;
+function resize() {
+  W = Math.min(1100, window.innerWidth - 28);
+  Hh = Math.min(640, window.innerHeight - 190);
+  cv.width = W; cv.height = Hh;
+}
+resize(); window.addEventListener("resize", resize);
+
+function niceStep(x) {
+  const mag = Math.pow(10, Math.floor(Math.log(x) / Math.LN10)), r = x / mag;
+  return (r < 1.5 ? 1 : r < 3.5 ? 2 : r < 7.5 ? 5 : 10) * mag;
+}
+
+function toggleMap() {
+  mapMode = !mapMode;
+  if (mapMode) {                     // fit the whole orbit (or at least the planet) on screen
+    const p = st.tank.getPosition(), o = orbitInfo(p, st.tank.getLinearVelocity());
+    const far = Math.max(R * 1.15, Math.min(o.ra, 8 * R), o.r);
+    mapS = 0.40 * Math.min(W, Hh) / far;
+  }
+}
+
+function drawFlight(alt, phi) {
+  const p = st.tank.getPosition();
+  const ux = Math.sin(phi), uy = Math.cos(phi), ex = Math.cos(phi), ey = -Math.sin(phi), HOR = 0.62;
+  const T = (wp) => [W / 2 + ((wp.x - R * ux) * ex + (wp.y - R * uy) * ey) * S,
+                     Hh * HOR - ((wp.x * ux + wp.y * uy - R) - alt) * S];
+
+  const sky = clamp(alt / 70000, 0, 1);
+  c.fillStyle = "rgb(" + Math.round(135 - 125 * sky) + "," + Math.round(190 - 175 * sky) + "," + Math.round(235 - 195 * sky) + ")";
+  c.fillRect(0, 0, W, Hh);
+
+  const stepY = Math.max(5, niceStep(120 / S));              // altitude lines
+  const yTop = alt + Hh * HOR / S, yBottom = alt - Hh * (1 - HOR) / S;
+  c.strokeStyle = "rgba(255,255,255,0.25)"; c.fillStyle = "rgba(255,255,255,0.8)";
+  c.font = "11px monospace"; c.textAlign = "left"; c.textBaseline = "bottom"; c.lineWidth = 1;
+  c.beginPath();
+  for (let k = Math.max(1, Math.ceil(yBottom / stepY)), n = 0; k * stepY <= yTop && n < 60; k++, n++) {
+    const Y = Math.round(Hh * HOR - (k * stepY - alt) * S) + 0.5;
+    c.moveTo(0, Y); c.lineTo(W, Y);
+    c.fillText(fmtAlt(k * stepY - REF_OFFSET * 0), 8, Y - 2);
+  }
+  c.stroke();
+
+  const gyS = Hh * HOR + alt * S;                            // ground and its marks
+  if (gyS < Hh) {
+    const top = Math.max(0, gyS);
+    c.fillStyle = "#3d5a2e"; c.fillRect(0, top, W, Hh - top);
+    c.fillStyle = "#2c4321"; c.fillRect(0, gyS, W, 3);
+    const stepX = Math.max(1, niceStep(140 / S)), sF = R * phi;
+    c.strokeStyle = "rgba(255,255,255,0.45)"; c.fillStyle = "rgba(255,255,255,0.8)";
+    c.textAlign = "center"; c.textBaseline = "top";
+    c.beginPath();
+    for (let k = Math.ceil((sF - W / 2 / S) / stepX), n = 0; k * stepX <= sF + W / 2 / S && n < 80; k++, n++) {
+      const X = Math.round(W / 2 + (k * stepX - sF) * S) + 0.5;
+      c.moveTo(X, gyS); c.lineTo(X, gyS + 8);
+      c.fillText(fmtAlt(k * stepX), X, gyS + 11);
+    }
+    c.stroke();
+    c.textAlign = "left";
+  }
+
+  if (st.thrust > 0) {                                       // flame
+    const a = st.engine.getAngle() + st.gimbal, dx = -Math.sin(a), dy = Math.cos(a);
+    const n = st.engine.getWorldPoint(P(0, -0.4)), L = (1.2 + 4 * st.thrust / MAX_THRUST) * (0.85 + Math.random() * 0.3);
+    const a1 = T({ x: n.x + dy * 0.28, y: n.y - dx * 0.28 }), a2 = T({ x: n.x - dy * 0.28, y: n.y + dx * 0.28 });
+    const tip = T({ x: n.x - dx * L, y: n.y - dy * L });
+    c.fillStyle = "#f1c40f"; c.beginPath(); c.moveTo(a1[0], a1[1]); c.lineTo(tip[0], tip[1]); c.lineTo(a2[0], a2[1]); c.closePath(); c.fill();
+  }
+
+  if (S * 6.3 < 16) {                                        // too small to see: show a marker instead
+    const m = T(p);
+    c.fillStyle = "#e74c3c"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
+    c.beginPath(); c.arc(m[0], m[1], 5, 0, 6.2832); c.fill(); c.stroke();
+    return;
+  }
+  for (const part of st.parts) {                             // the parts
+    c.fillStyle = part.color; c.beginPath();
+    part.verts.forEach(function (q, i) {
+      const s = T(part.body.getWorldPoint(q));
+      if (i === 0) c.moveTo(s[0], s[1]); else c.lineTo(s[0], s[1]);
+    });
+    c.closePath(); c.fill();
+  }
+}
+
+function drawMap(o) {                                        // the whole planet, not rotating, orbit drawn on it
+  const cx = W / 2, cy = Hh / 2, M = (x, y) => [cx + x * mapS, cy - y * mapS];
+  c.fillStyle = "#05070a"; c.fillRect(0, 0, W, Hh);
+  c.fillStyle = "#2f4a25"; c.strokeStyle = "#6f9a52"; c.lineWidth = 2;
+  c.beginPath(); c.arc(cx, cy, R * mapS, 0, 6.2832); c.fill(); c.stroke();
+
+  const pad = M(0, R);                                       // the launch pad
+  c.fillStyle = "#e8eef2"; c.fillRect(pad[0] - 2, pad[1] - 2, 4, 4);
+
+  const q = { x: -o.ey * o.dir, y: o.ex * o.dir };           // the path itself
+  const nuMax = o.bound ? Math.PI : Math.acos(-1 / o.e) * 0.98;
+  c.strokeStyle = o.rp - R > 0 ? "#4aa3ff" : "#ff9f43"; c.lineWidth = 1.5;   // blue = clears the ground, orange = hits it
+  c.beginPath();
+  for (let i = 0; i <= 240; i++) {
+    const nu = -nuMax + 2 * nuMax * i / 240, rr = o.pLat / (1 + o.e * Math.cos(nu));
+    const s = M(rr * (Math.cos(nu) * o.ex + Math.sin(nu) * q.x), rr * (Math.cos(nu) * o.ey + Math.sin(nu) * q.y));
+    if (i === 0) c.moveTo(s[0], s[1]); else c.lineTo(s[0], s[1]);
+  }
+  c.stroke();
+
+  c.font = "12px monospace"; c.textBaseline = "middle"; c.textAlign = "left";
+  const pe = M(o.rp * o.ex, o.rp * o.ey);
+  c.fillStyle = "#e8eef2"; c.beginPath(); c.arc(pe[0], pe[1], 3, 0, 6.2832); c.fill();
+  c.fillText("Pe " + fmtAlt(o.rp - R - REF_OFFSET), pe[0] + 7, pe[1]);
+  if (o.bound) {
+    const ap = M(-o.ra * o.ex, -o.ra * o.ey);
+    c.beginPath(); c.arc(ap[0], ap[1], 3, 0, 6.2832); c.fill();
+    c.fillText("Ap " + fmtAlt(o.ra - R - REF_OFFSET), ap[0] + 7, ap[1]);
+  }
+
+  const p = st.tank.getPosition(), a = st.tank.getAngle();   // the rocket: an arrow pointing the way its nose points
+  const m = M(p.x, p.y), dx = -Math.sin(a), dy = -Math.cos(a);
+  c.fillStyle = "#e74c3c"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
+  c.beginPath();
+  c.moveTo(m[0] + dx * 11, m[1] + dy * 11);
+  c.lineTo(m[0] - dx * 7 - dy * 6, m[1] - dy * 7 + dx * 6);
+  c.lineTo(m[0] - dx * 7 + dy * 6, m[1] - dy * 7 - dx * 6);
+  c.closePath(); c.fill(); c.stroke();
+  c.textAlign = "left";
+}
+
+function bar2(x, y, w, h, frac, color, label, text) {        // a vertical gauge
+  c.fillStyle = "rgba(10,14,18,0.6)"; c.fillRect(x - 6, y - 6, w + 12, h + 38);
+  c.strokeStyle = "rgba(255,255,255,0.5)"; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, w, h);
+  c.fillStyle = color; c.fillRect(x + 1, y + h - Math.round((h - 1) * frac), w - 1, Math.round((h - 1) * frac));
+  c.fillStyle = "#e8eef2"; c.font = "11px monospace"; c.textAlign = "center"; c.textBaseline = "top";
+  c.fillText(label, x + w / 2, y + h + 3);
+  c.fillText(text, x + w / 2, y + h + 16);
+  c.textAlign = "left";
+}
+
+function draw() {
+  const fb = st.tank, p = fb.getPosition(), v = fb.getLinearVelocity();
+  const r = Math.hypot(p.x, p.y), phi = Math.atan2(p.x, p.y);
+  const ux = Math.sin(phi), uy = Math.cos(phi), ex = Math.cos(phi), ey = -Math.sin(phi);
+  const alt = r - R, o = orbitInfo(p, v);
+
+  if (mapMode) drawMap(o); else drawFlight(alt, phi);
+
+  const speed = Math.hypot(v.x, v.y), vert = v.x * ux + v.y * uy, side = v.x * ex + v.y * ey;
+  let tilt = (fb.getAngle() + phi) * 180 / Math.PI; tilt = ((tilt + 180) % 360 + 360) % 360 - 180;
+  const mass = st.parts.reduce(function (m, q) { return m + q.body.getMass(); }, 0);
+  const dv = ISP * G0 * Math.log(mass / Math.max(1, mass - st.fuel));
+  const twr = MAX_THRUST / (mass * MU / (r * r));
+  const peAlt = o.rp - R - REF_OFFSET;
+  const lines = [
+    "Altitude    " + fmtAlt(alt - REF_OFFSET),
+    "Speed       " + speed.toFixed(0) + " m/s   (up " + vert.toFixed(0) + ", along " + side.toFixed(0) + ")",
+    "Apoapsis    " + fmtAlt(o.ra - R - REF_OFFSET),
+    "Periapsis   " + fmtAlt(peAlt) + (o.bound && peAlt > 0 ? "   IN ORBIT" : ""),
+    "Period      " + fmtTime(o.period),
+    "Delta-v     " + dv.toFixed(0) + " m/s   thrust/weight " + twr.toFixed(2),
+    "Tilt        " + tilt.toFixed(1) + " deg   damping " + (st.damping ? "ON" : "off"),
+    "Time        " + st.t.toFixed(1) + " s   view: " + (mapMode ? "MAP (M to return)" : "flight (M for map)")
+  ];
+  c.fillStyle = "rgba(10,14,18,0.55)"; c.fillRect(8, 8, 480, lines.length * 17 + 14);
+  c.fillStyle = "#e8eef2"; c.font = "13px monospace"; c.textAlign = "left"; c.textBaseline = "top";
+  for (let i = 0; i < lines.length; i++) c.fillText(lines[i], 16, 14 + i * 17);
+
+  bar2(W - 118, 20, 22, 110, st.fuel / FUEL_FULL, st.fuel / FUEL_FULL > 0.2 ? "#e0b030" : "#e74c3c", "FUEL", st.fuel.toFixed(0) + " kg");
+  bar2(W - 56, 20, 22, 110, st.throttle, "#4aa3ff", "THROT", Math.round(st.throttle * 100) + "%");
+}
+
+let last = performance.now(), acc = 0;
+function frame(now) {
+  acc += Math.min(0.1, (now - last) / 1000);
+  last = now;
+  let n = 0;
+  while (acc >= DT && n < 10) { stepSim(); acc -= DT; n++; }
+  if (n === 10) acc = 0;
+  draw();
+  requestAnimationFrame(frame);
+}
+
+buildRocket();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
