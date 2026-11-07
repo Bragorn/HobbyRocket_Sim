@@ -2,80 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hobby Rocket Sim</title>
+<title>Rocket Sim</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #101418; }
-  canvas { display: block; }
-
-  /* ---- builder sidebar (js/ui.js) ---- */
-  #side { position: fixed; top: 0; right: 0; bottom: 0; width: 300px; display: flex; flex-direction: column;
-          background: rgba(10,14,18,0.92); color: #e8eef2; font: 12px/1.35 monospace;
-          border-left: 1px solid rgba(255,255,255,0.14); user-select: none; }
-  #side .head { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.14); }
-  #side .row { display: flex; justify-content: space-between; padding: 1px 0; }
-  #side .k { color: #8a98a3; }
-  #side .actions { display: flex; gap: 8px; margin-top: 8px; }
-  #side .act { flex: 1; padding: 7px 0; font: inherit; color: #e8eef2; background: #1b242c;
-               border: 1px solid rgba(255,255,255,0.22); cursor: pointer; }
-  #side .act:hover:not(:disabled) { background: #26333d; }
-  #side .act.go { background: #e8eef2; color: #101418; border-color: #e8eef2; font-weight: bold; }
-  #side .act.go:hover:not(:disabled) { background: #fff; }
-  #side .act:disabled { opacity: 0.35; cursor: default; }
-  #side .msg { min-height: 16px; margin-top: 6px; color: #8a98a3; }
-  #side .msg.bad, #side .bad { color: #ff6b5e; }
-  #side .good { color: #5fd38d; }
-  #side .warn { color: #f0b33c; }
-
-  #side .parts { flex: 1; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #3a4854 transparent; }
-  #side .sec { padding: 12px 12px 3px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.14); }
-  #side .gt { padding: 8px 12px 3px; color: #8a98a3; }
-  #side .opt { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; width: 100%; box-sizing: border-box;
-               padding: 5px 12px 5px 9px; text-align: left; font: inherit; color: inherit; background: transparent;
-               border: 0; border-left: 3px solid transparent; cursor: pointer; }
-  #side .opt:hover { background: rgba(255,255,255,0.06); }
-  #side .opt.on { background: rgba(74,163,255,0.16); border-left-color: #4aa3ff; }
-  #side .opt .n { display: flex; align-items: center; gap: 6px; }
-  #side .opt .p { color: #8a98a3; }
-  #side .opt .s { grid-column: 1 / 3; color: #8a98a3; font-size: 11px; }
-  #side .opt .s.good, #side .opt .s.warn, #side .opt .s.bad { font-weight: bold; }
-  #side .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-
-  #side .cond { padding-bottom: 10px; border-top: 1px solid rgba(255,255,255,0.14); }
-  #side .cond .sec { border-bottom: 0; padding-bottom: 0; }
-  #side .chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px; }
-  #side .chip { padding: 3px 8px; font: inherit; color: inherit; background: #1b242c;
-                border: 1px solid rgba(255,255,255,0.18); cursor: pointer; }
-  #side .chip:hover { background: #26333d; }
-  #side .chip.on { background: rgba(74,163,255,0.28); border-color: #4aa3ff; }
-
-  #side .step { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
-  #side .step .chip { width: 28px; padding: 3px 0; text-align: center; }
-  #side .step .val { flex: 1; text-align: center; }
-  #side .hint { padding: 3px 12px 0; color: #8a98a3; font-size: 11px; }
-
-  #side .view { padding-bottom: 10px; border-top: 1px solid rgba(255,255,255,0.14); }
-
-  #side .off { opacity: 0.4; }
-  #side.locked .parts, #side.locked .cond { opacity: 0.5; }
+  body { margin: 0; background: #101418; color: #e8eef2; font: 13px/1.4 monospace; padding: 8px 12px; overflow: hidden; }
+  canvas { display: block; margin: 6px 0; border: 1px solid rgba(255,255,255,0.15); }
+  pre { white-space: pre-wrap; margin: 0; max-height: 120px; overflow: hidden; }
 </style>
 </head>
 <body>
-<canvas id="game"></canvas>
-<div id="side"></div>
+<div><b>Rocket Sim.</b> W/S throttle, Z full, X cut, A/D steer, T damping, R reset, M map view, + / - / wheel zoom</div>
+<canvas id="view"></canvas>
+<pre id="log"></pre>
 
-<!-- Plain scripts, loaded in this order. No modules, so the game opens
-     by double-clicking this file. Each file has one job. -->
-<script src="js/data.js"></script>        <!-- numbers and settings you tune -->
-<script src="js/catalog.js"></script>     <!-- the parts you can pick from, and the build -->
-<script src="js/telemetry.js"></script>   <!-- recorder, flight log, CSV -->
-<script src="js/sim.js"></script>         <!-- the physics -->
-<script src="js/camera.js"></script>      <!-- meters to pixels -->
-<script src="js/fx.js"></script>          <!-- sparks, smoke, shake: looks only -->
-<script src="js/render.js"></script>      <!-- drawing the world -->
-<script src="js/hud.js"></script>         <!-- text panels and graphs -->
-<script src="js/input.js"></script>       <!-- keyboard and wheel -->
-<script src="js/ui.js"></script>          <!-- the builder sidebar -->
-<script src="js/main.js"></script>        <!-- the game loop, starts everything -->
+<!-- Plain scripts, loaded in this order. No modules, so it opens by double-clicking this file. -->
+<script src="js/planck.min.js"></script>  <!-- the physics engine -->
+<script src="js/util.js"></script>        <!-- log, small helpers, planck check -->
+<script src="js/settings.js"></script>    <!-- every number you tune -->
+<script src="js/parts.js"></script>       <!-- the rocket as data: parts, shapes, forces -->
+<script src="js/controls.js"></script>    <!-- throttle, steering, damping: the ONE place the sim reads controls from -->
+<script src="js/world.js"></script>       <!-- builds the planet, bodies, joints, gravity -->
+<script src="js/sim.js"></script>         <!-- one physics step -->
+<script src="js/orbit.js"></script>       <!-- apoapsis / periapsis / period maths -->
+<script src="js/render.js"></script>      <!-- flight view, map view, readouts -->
+<script src="js/main.js"></script>        <!-- loop, view keys, reset; starts everything -->
 </body>
 </html>

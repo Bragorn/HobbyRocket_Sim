@@ -2,388 +2,194 @@
 
 /* =====================================================================
    RENDER  (js/render.js)
-   Canvas setup and drawing the world: sky, ground, pad, rocket, chute.
-   We draw in CSS pixels (Wc x Hc). By default the canvas has exactly that
-   many real pixels ("fast"). Press H for "sharp" (full retina resolution).
-   The builder sidebar (ui.js) sits on the right, so the canvas is that much narrower.
+   Drawing only: the flight view, the map view and the readouts.
+   Reads `sim` and `controls`, never changes them. The zoom and the map
+   toggle are view settings and live here.
    ===================================================================== */
 
-const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d", { alpha: false });
-let Wc = 0, Hc = 0;
-let sharp = false;
-let showDebug = true;
-let graphPage = 0;         // 0 and 1 = graph pages, -1 = graphs off
-const ARROW_PX = 22;       // below this rocket height (in pixels) the rocket is drawn as an arrow instead
-let showMarks = true;      // M: show the center of gravity (CG) and center of pressure (CP) on the rocket
+const cv = document.getElementById("view"), c = cv.getContext("2d");
+let W = 0, Hh = 0;
+let S = 9;                           // flight view zoom, pixels per meter
+let mapMode = false, mapS = 1e-4;    // M: the whole-planet view and its zoom
 
 function resize() {
-  const side = typeof uiWidth === "function" ? uiWidth() : 0;   // width taken by the sidebar
-  Wc = Math.max(200, window.innerWidth - side);
-  Hc = window.innerHeight;
-  const k = sharp ? (window.devicePixelRatio || 1) : 1;
-  canvas.width = Math.floor(Wc * k);
-  canvas.height = Math.floor(Hc * k);
-  canvas.style.width = Wc + "px";
-  canvas.style.height = Hc + "px";
-  ctx.setTransform(k, 0, 0, k, 0, 0);
+  W = Math.min(1100, window.innerWidth - 28);
+  Hh = Math.min(640, window.innerHeight - 190);
+  cv.width = W; cv.height = Hh;
 }
 
-function drawSky() {
-  const t = Math.min(1, Math.max(0, cam.y / 3000));      // sky darkens with altitude
-  const r = Math.round(135 - 125 * t);
-  const g = Math.round(190 - 175 * t);
-  const b = Math.round(235 - 195 * t);
-  ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
-  ctx.fillRect(-30, -30, Wc + 60, Hc + 60);              // a bit oversized so shaking never shows an edge
+function zoomBy(f) {
+  if (mapMode) mapS = Math.min(1e-2, Math.max(1e-6, mapS * f));
+  else S = Math.min(60, Math.max(0.2, S * f));
 }
 
-function niceStep(x) {                                    // round to 1, 2, 5, 10 x 10^n
-  const mag = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
-  const r = x / mag;
+function toggleMap() {
+  mapMode = !mapMode;
+  if (mapMode) {                     // fit the whole orbit (or at least the planet) on screen
+    const p = sim.hull.body.getPosition(), o = orbitInfo(p, sim.hull.body.getLinearVelocity());
+    const far = Math.max(R * 1.15, Math.min(o.ra, 8 * R), o.r);
+    mapS = 0.40 * Math.min(W, Hh) / far;
+  }
+}
+
+function niceStep(x) {
+  const mag = Math.pow(10, Math.floor(Math.log(x) / Math.LN10)), r = x / mag;
   return (r < 1.5 ? 1 : r < 3.5 ? 2 : r < 7.5 ? 5 : 10) * mag;
 }
 
-/* Altitude marks: a thin line every 5 m, labelled every 25 m. Kept wide
-   apart on purpose so they do not flicker when the rocket is fast. */
-function drawAltitudeLines() {
-  const stepM = Math.max(5, niceStep(220 / cam.zoom));
-  const labelEvery = Math.max(1, Math.round(25 / stepM));
-  const yTop = cam.y + (Hc * HORIZON) / cam.zoom;
-  const yBottom = cam.y - (Hc * (1 - HORIZON)) / cam.zoom;
-  const first = Math.max(1, Math.ceil(yBottom / stepM));  // never draw on the ground itself
+function fmtAlt(m) {
+  if (!isFinite(m)) return "escape";
+  return Math.abs(m) < 10000 ? m.toFixed(0) + " m" : (m / 1000).toFixed(1) + " km";
+}
+function fmtTime(s) {
+  if (s === null) return "-";
+  return s < 120 ? s.toFixed(0) + " s" : Math.floor(s / 60) + " min " + Math.round(s % 60) + " s";
+}
 
-  ctx.strokeStyle = "rgba(255,255,255,0.28)";
-  ctx.fillStyle = "rgba(255,255,255,0.8)";
-  ctx.lineWidth = 1;
-  ctx.font = "11px monospace";
-  ctx.textBaseline = "bottom";
-  ctx.textAlign = "left";
-  ctx.beginPath();
-  for (let k = first; k * stepM <= yTop && k - first < 40; k++) {
-    const py = Math.round(sy(k * stepM)) + 0.5;
-    ctx.moveTo(0, py);
-    ctx.lineTo(Wc, py);
-    if (k % labelEvery === 0) ctx.fillText(+(k * stepM).toFixed(2) + " m", 8, py - 2);
+function drawFlight(alt, phi) {
+  const p = sim.hull.body.getPosition();
+  const ux = Math.sin(phi), uy = Math.cos(phi), ex = Math.cos(phi), ey = -Math.sin(phi), HOR = 0.62;
+  const T = (wp) => [W / 2 + ((wp.x - R * ux) * ex + (wp.y - R * uy) * ey) * S,
+                     Hh * HOR - ((wp.x * ux + wp.y * uy - R) - alt) * S];
+
+  const sky = clamp(alt / 70000, 0, 1);
+  c.fillStyle = "rgb(" + Math.round(135 - 125 * sky) + "," + Math.round(190 - 175 * sky) + "," + Math.round(235 - 195 * sky) + ")";
+  c.fillRect(0, 0, W, Hh);
+
+  const stepY = Math.max(5, niceStep(120 / S));              // altitude lines
+  const yTop = alt + Hh * HOR / S, yBottom = alt - Hh * (1 - HOR) / S;
+  c.strokeStyle = "rgba(255,255,255,0.25)"; c.fillStyle = "rgba(255,255,255,0.8)";
+  c.font = "11px monospace"; c.textAlign = "left"; c.textBaseline = "bottom"; c.lineWidth = 1;
+  c.beginPath();
+  for (let k = Math.max(1, Math.ceil(yBottom / stepY)), n = 0; k * stepY <= yTop && n < 60; k++, n++) {
+    const Y = Math.round(Hh * HOR - (k * stepY - alt) * S) + 0.5;
+    c.moveTo(0, Y); c.lineTo(W, Y);
+    c.fillText(fmtAlt(k * stepY - REF_OFFSET * 0), 8, Y - 2);
   }
-  ctx.stroke();
-}
+  c.stroke();
 
-function drawGround() {
-  const gy = sy(0);
-  if (gy > Hc) return;
-  const top = Math.max(0, gy);
-  ctx.fillStyle = "#3d5a2e";
-  ctx.fillRect(0, top, Wc, Hc - top);
-  ctx.fillStyle = "#2c4321";
-  ctx.fillRect(0, gy, Wc, 3);
-}
-
-function drawGroundMarks() {                              // a tick and a label every few meters
-  const gy = sy(0);
-  if (gy > Hc - 4 || gy < 0) return;
-  const stepM = Math.max(1, niceStep(160 / cam.zoom));
-  const left = cam.x - (Wc / 2) / cam.zoom, right = cam.x + (Wc / 2) / cam.zoom;
-  ctx.strokeStyle = "rgba(255,255,255,0.45)";
-  ctx.fillStyle = "rgba(255,255,255,0.8)";
-  ctx.font = "11px monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.beginPath();
-  for (let k = Math.ceil(left / stepM); k * stepM <= right; k++) {
-    const px = Math.round(sx(k * stepM)) + 0.5;
-    ctx.moveTo(px, gy);
-    ctx.lineTo(px, gy + 8);
-    ctx.fillText(k * stepM + " m", px, gy + 11);
+  const gyS = Hh * HOR + alt * S;                            // ground and its marks
+  if (gyS < Hh) {
+    const top = Math.max(0, gyS);
+    c.fillStyle = "#3d5a2e"; c.fillRect(0, top, W, Hh - top);
+    c.fillStyle = "#2c4321"; c.fillRect(0, gyS, W, 3);
+    const stepX = Math.max(1, niceStep(140 / S)), sF = R * phi;
+    c.strokeStyle = "rgba(255,255,255,0.45)"; c.fillStyle = "rgba(255,255,255,0.8)";
+    c.textAlign = "center"; c.textBaseline = "top";
+    c.beginPath();
+    for (let k = Math.ceil((sF - W / 2 / S) / stepX), n = 0; k * stepX <= sF + W / 2 / S && n < 80; k++, n++) {
+      const X = Math.round(W / 2 + (k * stepX - sF) * S) + 0.5;
+      c.moveTo(X, gyS); c.lineTo(X, gyS + 8);
+      c.fillText(fmtAlt(k * stepX), X, gyS + 11);
+    }
+    c.stroke();
+    c.textAlign = "left";
   }
-  ctx.stroke();
-  ctx.textAlign = "left";
-}
 
-function drawPad() {
-  const gy = sy(0);
-  const z = cam.zoom;
-  if (gy < 0 || gy - z > Hc) return;                      // pad and rod are off screen
-  ctx.fillStyle = "#555e66";
-  ctx.fillRect(sx(-0.15), gy - 0.03 * z, 0.30 * z, 0.03 * z);            // pad plate
-  ctx.fillStyle = "#8a949c";
-  ctx.fillRect(sx(0.03), gy - 1.0 * z, Math.max(1, 0.006 * z), 1.0 * z); // launch rod, 1 m tall
-}
+  for (const part of sim.parts) for (const f of part.forces) {   // a flame for every engine that is burning
+    if (f.kind !== "thrust" || f.now <= 0) continue;
+    const a = part.body.getAngle() + f.angle, dx = -Math.sin(a), dy = Math.cos(a);
+    const n = part.body.getWorldPoint(P(f.at[0], f.at[1])), L = (1.2 + 4 * f.now / f.max) * (0.85 + Math.random() * 0.3);
+    const a1 = T({ x: n.x + dy * 0.28, y: n.y - dx * 0.28 }), a2 = T({ x: n.x - dy * 0.28, y: n.y + dx * 0.28 });
+    const tip = T({ x: n.x - dx * L, y: n.y - dy * L });
+    c.fillStyle = "#f1c40f"; c.beginPath(); c.moveTo(a1[0], a1[1]); c.lineTo(tip[0], tip[1]); c.lineTo(a2[0], a2[1]); c.closePath(); c.fill();
+  }
 
-function drawFlame(cx, baseY, z) {
-  const f = Math.min(2, Math.sqrt(sim.thrust / 6));       // bigger thrust, bigger flame
-  const len = Math.max(6, 0.14 * z * f) * (0.8 + Math.random() * 0.4);
-  const w = Math.max(2, 0.014 * z * f);
-  ctx.fillStyle = "#f1c40f";
-  ctx.beginPath();
-  ctx.moveTo(cx - w, baseY);
-  ctx.lineTo(cx, baseY + len);
-  ctx.lineTo(cx + w, baseY);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function drawChute() {                                    // drawn in world space, pointing where the pull goes
-  if (!sim.chuteDeployed || sel.chute < 0 || chutePart.broken) return;
-  if (sim.landed) {                                       // landed: the canopy lies collapsed beside the rocket
-    const c = CHUTES[sel.chute], dir = sim.rest.theta >= 0 ? 1 : -1;
-    ctx.fillStyle = c.color;
-    ctx.beginPath();
-    ctx.ellipse(sx(sim.rest.x + dir * (ROCKET_H - sim.cg0 + 0.1)), sy(0) - 1.5, Math.max(2, c.diameter * cam.zoom * 0.45), 2.5, 0, 0, 6.2832);
-    ctx.fill();
+  if (S * 6.3 < 16) {                                        // too small to see: show a marker instead
+    const m = T(p);
+    c.fillStyle = "#e74c3c"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
+    c.beginPath(); c.arc(m[0], m[1], 5, 0, 6.2832); c.fill(); c.stroke();
     return;
   }
-  const c = CHUTES[sel.chute], z = cam.zoom, open = sim.chuteOpen;
-  const a = chuteAttachAt() - sim.cg0;
-  const ax = sim.x + a * Math.sin(sim.theta);
-  const ay = sim.y + sim.cg0 + a * Math.cos(sim.theta);   // tie-on point in meters
-  const lineLen = CHUTE_LINE * (0.4 + 0.6 * open);
-  const w = c.diameter * z * (0.25 + 0.75 * open);        // canopy width in pixels
-  const ccx = sx(ax + sim.chuteUx * lineLen);
-  const ccy = sy(ay + sim.chuteUy * lineLen);             // canopy center on screen
-  ctx.save();
-  ctx.translate(ccx, ccy);
-  ctx.rotate(Math.atan2(sim.chuteUx, sim.chuteUy));       // dome faces away from the rocket
-  ctx.strokeStyle = "rgba(20,20,20,0.7)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-w / 2, 0); ctx.lineTo(0, lineLen * z);
-  ctx.moveTo(w / 2, 0);  ctx.lineTo(0, lineLen * z);
-  ctx.stroke();
-  ctx.fillStyle = c.color;
-  ctx.beginPath();
-  ctx.ellipse(0, 0, w / 2, w * 0.28, 0, Math.PI, 2 * Math.PI);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
-
-/* ---- the look of each part (looks only, no physics) ----
-   A fin is drawn as an outline for one side, mirrored for the other.
-   Each point is [out, up]: out = 0 at the tube wall and 1 at the fin tip,
-   up = 0 at the bottom of the fin root and 1 at its top. Below 0 hangs off the back. */
-const FIN_OUTLINES = {
-  trapezoid: [[0, 0], [0, 1], [1, 0.45], [1, 0]],
-  swept:     [[0, 0], [0, 1], [1, 0.40], [1, -0.20]],
-  delta:     [[0, 0], [0, 1], [1, 0.45], [1, 0.20]],
-  large:     [[0, 0], [0, 1], [0.9, 0.85], [1, 0.55], [1, 0]]
-};
-
-function bodyColor() {                                       // the tube's color (the aft end of the airframe matches it)
-  for (let i = 0; i < rocket.parts.length; i++) if (rocket.parts[i].kind === "tube") return rocket.parts[i].color;
-  return "#ecf0f1";
-}
-
-function drawFins(p, cx, bottom, z) {
-  const w = p.width * z, h = p.length * z;
-  const root = bottom - (p.shift || 0) * z;                  // the fins can be glued higher up the tube (or hang off the back)
-  const half = Math.max(w / 2, p.span * z / 2);              // half of the fin span, in pixels
-  const out = FIN_OUTLINES[p.shape] || FIN_OUTLINES.trapezoid;
-  ctx.fillStyle = bodyColor();
-  ctx.fillRect(cx - w / 2, bottom - h, w, h);                // the aft end of the airframe
-  ctx.fillStyle = p.color;
-  for (let side = -1; side <= 1; side += 2) {
-    if (p.only && p.only !== side) continue;                 // a single loose fin
-    if (p.fins && p.fins[side < 0 ? 0 : 1].gone) continue;   // this one has broken off
-    ctx.beginPath();
-    for (let i = 0; i < out.length; i++) {
-      const X = cx + side * (w / 2 + (half - w / 2) * out[i][0]);
-      const Y = root - h * out[i][1];
-      if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
-    }
-    ctx.closePath();
-    ctx.fill();
-    if (z > 60) { ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1; ctx.stroke(); }
+  for (const part of sim.parts) {                            // the parts
+    c.fillStyle = part.color; c.beginPath();
+    part.verts.forEach(function (q, i) {
+      const s = T(part.body.getWorldPoint(q));
+      if (i === 0) c.moveTo(s[0], s[1]); else c.lineTo(s[0], s[1]);
+    });
+    c.closePath(); c.fill();
   }
 }
 
-function drawNose(p, cx, bottom, top, w) {
-  const h = bottom - top;
-  ctx.fillStyle = p.color;
-  ctx.beginPath();
-  if (p.shape === "ogive") {                                 // curved sides, sharp tip
-    ctx.moveTo(cx - w / 2, bottom);
-    ctx.bezierCurveTo(cx - w / 2, bottom - h * 0.55, cx - w * 0.2, top + h * 0.12, cx, top);
-    ctx.bezierCurveTo(cx + w * 0.2, top + h * 0.12, cx + w / 2, bottom - h * 0.55, cx + w / 2, bottom);
-  } else if (p.shape === "blunt") {                          // short and rounded
-    ctx.moveTo(cx - w / 2, bottom);
-    ctx.lineTo(cx - w / 2, top + h * 0.55);
-    ctx.ellipse(cx, top + h * 0.55, w / 2, h * 0.55, 0, Math.PI, 2 * Math.PI);
-    ctx.lineTo(cx + w / 2, bottom);
-  } else {                                                   // conical: straight sides
-    ctx.moveTo(cx - w / 2, bottom);
-    ctx.lineTo(cx, top);
-    ctx.lineTo(cx + w / 2, bottom);
+function drawMap(o) {                                        // the whole planet, not rotating, orbit drawn on it
+  const cx = W / 2, cy = Hh / 2, M = (x, y) => [cx + x * mapS, cy - y * mapS];
+  c.fillStyle = "#05070a"; c.fillRect(0, 0, W, Hh);
+  c.fillStyle = "#2f4a25"; c.strokeStyle = "#6f9a52"; c.lineWidth = 2;
+  c.beginPath(); c.arc(cx, cy, R * mapS, 0, 6.2832); c.fill(); c.stroke();
+
+  const pad = M(0, R);                                       // the launch pad
+  c.fillStyle = "#e8eef2"; c.fillRect(pad[0] - 2, pad[1] - 2, 4, 4);
+
+  const q = { x: -o.ey * o.dir, y: o.ex * o.dir };           // the path itself
+  const nuMax = o.bound ? Math.PI : Math.acos(-1 / o.e) * 0.98;
+  c.strokeStyle = o.rp - R > 0 ? "#4aa3ff" : "#ff9f43"; c.lineWidth = 1.5;   // blue = clears the ground, orange = hits it
+  c.beginPath();
+  for (let i = 0; i <= 240; i++) {
+    const nu = -nuMax + 2 * nuMax * i / 240, rr = o.pLat / (1 + o.e * Math.cos(nu));
+    const s = M(rr * (Math.cos(nu) * o.ex + Math.sin(nu) * q.x), rr * (Math.cos(nu) * o.ey + Math.sin(nu) * q.y));
+    if (i === 0) c.moveTo(s[0], s[1]); else c.lineTo(s[0], s[1]);
   }
-  ctx.closePath();
-  ctx.fill();
-}
+  c.stroke();
 
-/* CG (black and white circle) and CP (red circle) on the rocket's axis. The CP has to
-   sit BELOW the CG, toward the fins, for the rocket to be stable. Labels stay upright. */
-function drawMarkers(cx, baseY, z, theta) {
-  const cp = rocketCP();
-  if (cp === null) return;
-  const tall = z * ROCKET_H;                      // the rocket's height on screen, px
-  if (tall < 30) return;                          // too small: the dots would cover the rocket
-  const r = Math.max(2, Math.min(5, tall * 0.045)), labels = tall > 60;   // the dots shrink as you zoom out
-  const spots = [[sim.cg, "CG", -1], [cp, "CP", 1]];
-  for (let i = 0; i < spots.length; i++) {
-    const y = baseY - spots[i][0] * z;
-    ctx.save();
-    ctx.translate(cx, y);
-    ctx.lineWidth = 1.5;
-    if (i === 0) {
-      ctx.fillStyle = "#fff";
-      ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill();
-      ctx.fillStyle = "#111";
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, 0, Math.PI / 2); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, Math.PI, Math.PI * 1.5); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = "#111";
-      ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.stroke();
-    } else {
-      ctx.fillStyle = "#e74c3c";
-      ctx.strokeStyle = "#fff";
-      ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill(); ctx.stroke();
-    }
-    if (labels) {
-      ctx.rotate(-theta);
-      ctx.font = "11px monospace";
-      ctx.textBaseline = "middle";
-      ctx.textAlign = spots[i][2] < 0 ? "right" : "left";
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "rgba(0,0,0,0.6)";
-      ctx.strokeText(spots[i][1], spots[i][2] * (r + 6), 0);
-      ctx.fillStyle = "#fff";
-      ctx.fillText(spots[i][1], spots[i][2] * (r + 6), 0);
-    }
-    ctx.restore();
+  c.font = "12px monospace"; c.textBaseline = "middle"; c.textAlign = "left";
+  const pe = M(o.rp * o.ex, o.rp * o.ey);
+  c.fillStyle = "#e8eef2"; c.beginPath(); c.arc(pe[0], pe[1], 3, 0, 6.2832); c.fill();
+  c.fillText("Pe " + fmtAlt(o.rp - R - REF_OFFSET), pe[0] + 7, pe[1]);
+  if (o.bound) {
+    const ap = M(-o.ra * o.ex, -o.ra * o.ey);
+    c.beginPath(); c.arc(ap[0], ap[1], 3, 0, 6.2832); c.fill();
+    c.fillText("Ap " + fmtAlt(o.ra - R - REF_OFFSET), ap[0] + 7, ap[1]);
   }
+
+  const p = sim.hull.body.getPosition(), a = sim.hull.body.getAngle();   // the rocket: an arrow pointing the way its nose points
+  const m = M(p.x, p.y), dx = -Math.sin(a), dy = -Math.cos(a);
+  c.fillStyle = "#e74c3c"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
+  c.beginPath();
+  c.moveTo(m[0] + dx * 11, m[1] + dy * 11);
+  c.lineTo(m[0] - dx * 7 - dy * 6, m[1] - dy * 7 + dx * 6);
+  c.lineTo(m[0] - dx * 7 + dy * 6, m[1] - dy * 7 - dx * 6);
+  c.closePath(); c.fill(); c.stroke();
+  c.textAlign = "left";
 }
 
-/* The pieces that broke off, each drawn the way the part looks. They lie on their sides once they land. */
-function drawDebris() {
-  const z = cam.zoom;
-  for (let i = 0; i < sim.debris.length; i++) {
-    const d = sim.debris[i];
-    const X = sx(d.x), Y = sy(d.y);
-    if (X < -100 || X > Wc + 100 || Y < -100 || Y > Hc + 100) continue;
-    const w = Math.max(2, d.w * z), h = Math.max(2, d.h * z);
-    ctx.save();
-    ctx.translate(X, Y);
-    ctx.rotate(d.theta);
-    if (d.kind === "fin") {
-      drawFins({ width: d.w, length: d.h, span: d.span, shape: d.shape, color: d.color, shift: 0, only: d.side }, 0, h / 2, z);
-    } else if (d.kind === "fins") {
-      drawFins({ width: d.w, length: d.h, span: d.span, shape: d.shape, color: d.color, shift: 0 }, 0, h / 2, z);
-    } else if (d.kind === "nose") {
-      drawNose({ shape: d.shape, color: d.color }, 0, h / 2, -h / 2, w);
-    } else if (d.kind === "chute") {
-      ctx.fillStyle = d.color;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, w / 2, Math.max(2, w * 0.28), 0, Math.PI, 2 * Math.PI);
-      ctx.closePath();
-      ctx.fill();
-    } else {                                              // tube and nose weight: a plain block
-      ctx.fillStyle = d.color;
-      ctx.fillRect(-w / 2, -h / 2, w, Math.max(2, h));
-    }
-    ctx.restore();
-  }
+function bar2(x, y, w, h, frac, color, label, text) {        // a vertical gauge
+  c.fillStyle = "rgba(10,14,18,0.6)"; c.fillRect(x - 6, y - 6, w + 12, h + 38);
+  c.strokeStyle = "rgba(255,255,255,0.5)"; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, w, h);
+  c.fillStyle = color; c.fillRect(x + 1, y + h - Math.round((h - 1) * frac), w - 1, Math.round((h - 1) * frac));
+  c.fillStyle = "#e8eef2"; c.font = "11px monospace"; c.textAlign = "center"; c.textBaseline = "top";
+  c.fillText(label, x + w / 2, y + h + 3);
+  c.fillText(text, x + w / 2, y + h + 16);
+  c.textAlign = "left";
 }
 
-function drawArrow() {                                    // far away: just show where it is and which way it points
-  const pose = rocketPose();
-  ctx.save();
-  ctx.translate(sx(pose.x), sy(pose.yc));
-  ctx.rotate(pose.theta);
-  ctx.fillStyle = "#e74c3c";
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 3); ctx.lineTo(-6, 7);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
-}
+function draw() {
+  const fb = sim.hull.body, p = fb.getPosition(), v = fb.getLinearVelocity();
+  const r = Math.hypot(p.x, p.y), phi = Math.atan2(p.x, p.y);
+  const ux = Math.sin(phi), uy = Math.cos(phi), ex = Math.cos(phi), ey = -Math.sin(phi);
+  const alt = r - R, o = orbitInfo(p, v);
 
-function drawRocket() {
-  const z = cam.zoom;
-  if (z * ROCKET_H < ARROW_PX) { drawArrow(); return; }
-  const pose = rocketPose();                       // in flight: the sim's position and tilt. After landing: tipped over and settled
-  ctx.save();
-  ctx.translate(sx(pose.x), sy(pose.yc));          // origin = the balance point
-  ctx.rotate(pose.theta);
-  const cx = 0;
-  const baseY = sim.cg0 * z;                       // the bottom of the rocket hangs this far below it
+  if (mapMode) drawMap(o); else drawFlight(alt, phi);
 
-  if (sim.thrust > 0) drawFlame(cx, baseY, z);
+  const speed = Math.hypot(v.x, v.y), vert = v.x * ux + v.y * uy, side = v.x * ex + v.y * ey;
+  let tilt = (fb.getAngle() + phi) * 180 / Math.PI; tilt = ((tilt + 180) % 360 + 360) % 360 - 180;
+  const mass = totalMass();
+  const dv = ISP * G0 * Math.log(mass / Math.max(1, mass - sim.fuel));
+  const twr = maxThrust() / (mass * MU / (r * r));
+  const peAlt = o.rp - R - REF_OFFSET;
+  const lines = [
+    "Altitude    " + fmtAlt(alt - REF_OFFSET),
+    "Speed       " + speed.toFixed(0) + " m/s   (up " + vert.toFixed(0) + ", along " + side.toFixed(0) + ")",
+    "Apoapsis    " + fmtAlt(o.ra - R - REF_OFFSET),
+    "Periapsis   " + fmtAlt(peAlt) + (o.bound && peAlt > 0 ? "   IN ORBIT" : ""),
+    "Period      " + fmtTime(o.period),
+    "Delta-v     " + dv.toFixed(0) + " m/s   thrust/weight " + twr.toFixed(2),
+    "Tilt        " + tilt.toFixed(1) + " deg   damping " + (controls.damping ? "ON" : "off"),
+    "Time        " + sim.t.toFixed(1) + " s   view: " + (mapMode ? "MAP (M to return)" : "flight (M for map)")
+  ];
+  c.fillStyle = "rgba(10,14,18,0.55)"; c.fillRect(8, 8, 480, lines.length * 17 + 14);
+  c.fillStyle = "#e8eef2"; c.font = "13px monospace"; c.textAlign = "left"; c.textBaseline = "top";
+  for (let i = 0; i < lines.length; i++) c.fillText(lines[i], 16, 14 + i * 17);
 
-  let up = 0;                                             // meters up the stack
-  for (let i = 0; i < rocket.parts.length; i++) {
-    const p = rocket.parts[i];
-    const w = p.width * z;
-
-    if (p.inside) {                                       // motor and chute: show what you picked
-      if (p.kind === "motor") {
-        const mh = p.length * z, mw = p.width * z, mc = MOTORS[sel.motor];
-        ctx.globalAlpha = 0.65;
-        ctx.fillStyle = mc.color;
-        ctx.fillRect(cx - mw / 2, baseY - mh, mw, mh);                              // casing, seen through the tube
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = sel.chute >= 0 ? DELAY_COLORS[sel.delay] : "#7f8c8d";
-        ctx.fillRect(cx - mw / 2, baseY - mh, mw, Math.max(3, 0.012 * z));         // delay band at the forward end
-        ctx.fillStyle = "#34495e";
-        ctx.fillRect(cx - mw * 0.4, baseY, mw * 0.8, Math.max(2, 0.01 * z));       // nozzle
-      } else if (p.kind === "ballast" && p.mass > 0) {        // the weight in the nose: bigger for more grams
-        const bh = Math.max(2, (0.004 + p.mass * 0.6) * z);
-        ctx.fillStyle = "rgba(90,98,105,0.95)";
-        ctx.fillRect(cx - bodyDiameter() * z * 0.22, baseY - p.at * z - bh / 2, bodyDiameter() * z * 0.44, bh);
-      } else if (p.kind === "chute" && sel.chute >= 0 && !sim.chuteDeployed) {
-        const c = CHUTES[sel.chute], bh = Math.max(2, c.diameter * 0.1 * z);
-        ctx.fillStyle = c.color;
-        ctx.fillRect(cx - bodyDiameter() * z / 2, baseY - p.at * z - bh / 2, bodyDiameter() * z, bh);   // packed chute, as wide as the tube
-      }
-      continue;
-    }
-
-    if (p.broken) { up += p.length; continue; }   // this part is gone, but the others stay where they are
-
-    const h = p.length * z;
-    const bottom = baseY - up * z;
-    const top = bottom - h;
-    ctx.fillStyle = p.color;
-
-    if (p.kind === "tube") {
-      ctx.fillRect(cx - w / 2, top, w, h);
-      ctx.fillStyle = "rgba(0,0,0,0.14)";                 // a little shading down the right side
-      ctx.fillRect(cx + w * 0.2, top, w * 0.3, h);
-    } else if (p.kind === "nose") {
-      drawNose(p, cx, bottom, top, w);
-    } else if (p.kind === "fins") {
-      drawFins(p, cx, bottom, z);
-    }
-    up += p.length;
-  }
-  if (showMarks) drawMarkers(cx, baseY, z, pose.theta);
-  ctx.restore();
-}
-
-/* One full frame. The text and graphs live in hud.js. */
-function render(dtFrame) {
-  fxUpdate(dtFrame);
-  ctx.save();
-  if (fx.shake > 0) ctx.translate((Math.random() * 2 - 1) * fx.shake, (Math.random() * 2 - 1) * fx.shake);   // a hard hit shakes the picture (not the text)
-  drawSky();
-  drawAltitudeLines();
-  drawGround();
-  drawGroundMarks();
-  drawPad();
-  drawRocket();
-  drawDebris();
-  drawChute();
-  fxDraw();
-  ctx.restore();
-  drawHud(dtFrame);
+  bar2(W - 118, 20, 22, 110, sim.fuel / sim.fuelFull, sim.fuel / sim.fuelFull > 0.2 ? "#e0b030" : "#e74c3c", "FUEL", sim.fuel.toFixed(0) + " kg");
+  bar2(W - 56, 20, 22, 110, controls.throttle, "#4aa3ff", "THROT", Math.round(controls.throttle * 100) + "%");
 }
